@@ -331,14 +331,18 @@ code alone as proof scoping worked. Verify the picked task's ID against
 anything, every time a controller goes live for the first time (or after
 any config change to how it's invoked).
 
-**Open policy question, not yet resolved:** the site-djbclark run posting
-directly to a live GitHub issue was a reasonable reading of that
-particular task ("paste this into a fresh AI session for an independent
-read"), but it's a new class of consequence beyond local file/commit
-changes — external, visible, on a real repo — that nobody explicitly
-pre-gated. Decide, before the next controller run that could plausibly
-produce an external action (GitHub comments/issues/PRs), whether that
-needs its own review gate distinct from `autoCommit`.
+**Resolved 2026-08-02: no separate gate for external actions.** The
+site-djbclark run posting directly to a live GitHub issue raised the
+question of whether external, visible actions (GitHub comments/issues/PRs)
+need their own review step distinct from `autoCommit`. Decided: no —
+the task's own scope is the real control, same philosophy as
+`autoCommit` itself. If a task's instructions call for posting somewhere
+(as that one explicitly did — "paste this into a fresh AI session for an
+independent read"), a well-scoped controller does it autonomously. This
+places the responsibility on task authoring (write tasks that only ask
+for what you actually want done) rather than on a manual approval step
+for every external action — consistent with the repo now being public
+and the operator's general risk tolerance for this project.
 
 **Not yet done:** the epic-scoping fix has only been live-validated for
 `site-djbclark`. The other three controllers (`stayturgid`, `site-private`,
