@@ -344,10 +344,37 @@ for what you actually want done) rather than on a manual approval step
 for every external action — consistent with the repo now being public
 and the operator's general risk tolerance for this project.
 
-**Not yet done:** the epic-scoping fix has only been live-validated for
-`site-djbclark`. The other three controllers (`stayturgid`, `site-private`,
-`Shizuku`) are configured and `doctor`-validated but have never gone live
-— watch each one's first real iteration the same way.
+**Second controller live-validated, 2026-08-01/02: `stayturgid`, from its
+correct post-relocation workspace.** Before going live, two prerequisites
+were handled: (1) `ops-djbclark-bc9` (the Shizuku orphaned-checkout task)
+got an explicit "tracked only, do not act" constraint added to its own
+description — it had only existed in memory/docs before, invisible to any
+agent reading the task itself, a real gap under the no-separate-gate
+policy just above; (2) a research-only task
+(`ops-djbclark-cr0.1`, covering the remaining app-disposition scope of
+[stayturgid#151](https://github.com/djbclark/stayturgid/issues/151)) was
+seeded under stayturgid's epic, same safe shape as the site-djbclark task.
+Ran `ralph-tui run --headless --iterations 1 --verify --epic
+ops-djbclark-cr0` from `ralph-stayturgid/stayturgid` — verified `Epic:
+ops-djbclark-cr0` / task `ops-djbclark-cr0.1` in the session header
+*before* letting the agent proceed, same discipline as site-djbclark's
+re-run. Completed cleanly (5m12s, `max_iterations` exit), independently
+re-verified after (not just trusted from the self-report):
+`git status` in the task workspace was completely clean — zero code
+changes, despite the task's no-code-changes scope being enforced by
+nothing but the task's own text (the agent had full Bash/Edit access the
+entire time). Real GitHub comment confirmed via `gh issue view`
+([stayturgid#151](https://github.com/djbclark/stayturgid/issues/151#issuecomment-5154020315),
+posted 2026-08-01T23:39:50Z), issue correctly left open, bd bead correctly
+closed. This is the clearest evidence yet that "task scope is the real
+control" holds under real conditions, not just as a policy statement.
+
+**Not yet done:** `site-private` and `Shizuku` remain unvalidated —
+`Shizuku` has a properly hands-off-scoped task waiting
+(`ops-djbclark-bc9`) if it's ever picked up; `site-private` has no task
+seeded yet. **Operator explicitly paused here (2026-08-02)** to check in
+given how much shipped this session — do not seed or bring up a third
+controller without that check-in first.
 
 ## 4. Before trusting any of this in production
 
