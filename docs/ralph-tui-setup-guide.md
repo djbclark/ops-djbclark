@@ -101,8 +101,22 @@ the multi-repo ops suite (and now Shizuku — see §3).
 pattern actually implemented, across stayturgid / site-djbclark /
 site-private / Shizuku:
 
-- **One Ralph "controller" run per repo**, each invoked from
-  `~/src/ops-worktrees/main/<repo>` (its own `cwd`).
+- **One Ralph "controller" run per repo**, each invoked from a **dedicated
+  `ralph/<repo>` task workspace** (`~/src/ops-worktrees/ralph-<repo>/<repo>`,
+  its own branch, its own `cwd`) — **not** `main/<repo>`.
+  **Corrected 2026-08-02** (same day as the epic-scoping fix, after a
+  cross-session review caught the original design before parallel mode was
+  ever enabled): Ralph's own session lock, worktree manager, and merge
+  queue all live wherever its `cwd` is. `main/<repo>` is meant to stay the
+  clean, shared reference checkout — running Ralph there directly meant
+  that the moment `parallel.mode` ever got turned on, its forced
+  `autoCommit: true` (see §0) would autocommit straight onto `main/`'s
+  checked-out branch (`master`), with no PR, no review, no isolation from
+  what every other tool/human treats as the clean baseline. Routing Ralph
+  through its own disposable branch instead means autocommits land there,
+  and reaching `master` still requires the normal PR-and-merge step, same
+  as every other piece of work in `ops-worktrees`. `main/<repo>` is never
+  touched by any Ralph controller.
 - **One single shared Beads DB**, not per-repo federation — the
   control-plane repo `djbclark/ops-djbclark`
   (`~/src/ops-worktrees/main/ops-djbclark`, `.beads/` prefix `ops-djbclark`).
@@ -241,24 +255,30 @@ Usage pattern going forward:
   Remove the task workspace once the PR is merged or closed, same as any
   other task workspace.
 
-## 4a. As-built quick reference (updated 2026-08-01 after epic-scoping fix)
+## 4a. As-built quick reference (updated 2026-08-02, current state)
 
 | Repo | `.ralph-tui/config.toml` | Controller epic (`epicId`) | Routing label (metadata only) |
 |---|---|---|---|
-| stayturgid | `~/src/ops-worktrees/main/stayturgid/.ralph-tui/config.toml` | `ops-djbclark-cr0` | `repo:stayturgid` |
-| site-djbclark | `~/src/ops-worktrees/main/site-djbclark/.ralph-tui/config.toml` | `ops-djbclark-6ub` | `repo:site-djbclark` |
-| site-private | `~/src/ops-worktrees/main/site-private/.ralph-tui/config.toml` | `ops-djbclark-6qp` | `repo:site-private` |
-| Shizuku | `~/src/ops-worktrees/main/Shizuku/.ralph-tui/config.toml` | `ops-djbclark-bk7` | `repo:shizuku` |
+| stayturgid | `~/src/ops-worktrees/ralph-stayturgid/stayturgid/.ralph-tui/config.toml` | `ops-djbclark-cr0` | `repo:stayturgid` |
+| site-djbclark | `~/src/ops-worktrees/ralph-site-djbclark/site-djbclark/.ralph-tui/config.toml` | `ops-djbclark-6ub` | `repo:site-djbclark` |
+| site-private | `~/src/ops-worktrees/ralph-site-private/site-private/.ralph-tui/config.toml` | `ops-djbclark-6qp` | `repo:site-private` |
+| Shizuku | `~/src/ops-worktrees/ralph-Shizuku/Shizuku/.ralph-tui/config.toml` | `ops-djbclark-bk7` | `repo:shizuku` |
+
+Each `ralph-<repo>/<repo>` is its own dedicated task workspace on a
+`ralph/<repo>` branch (branched from `origin/master`, or `fork/master` for
+Shizuku) — **not** `main/<repo>`, per §2's cwd-placement fix. `main/<repo>`
+stays untouched by every controller.
 
 All four: `defaultAgent = "claude"`, `defaultTracker = "beads-bv"`,
 `autoCommit = false`, `trackers.options.workingDir =
-"/Users/djbclark/src/ops-worktrees/main/ops-djbclark"`,
-`trackers.options.epicId = "<that repo's epic ID above>"`.
+"/Users/djbclark/src/ops-worktrees/main/ops-djbclark"` (the control-plane
+repo's path — unaffected by the controllers' own cwd move, since
+`workingDir` was always independent of `cwd`), `trackers.options.epicId =
+"<that repo's epic ID above>"`.
 
-Validated with `ralph-tui doctor` from `main/stayturgid` — HEALTHY, Claude
-Code CLI detected and preflight-responsive. (That validation predates the
-epic-scoping fix but only exercises agent preflight, not tracker routing,
-so it's still valid.)
+Validated with `ralph-tui doctor` from each `ralph-<repo>/<repo>` after
+the relocation — all four HEALTHY, Claude Code CLI detected and
+preflight-responsive.
 
 **When filing a task meant for a specific repo's controller, parent it
 under that repo's epic** (labels are metadata only — see §0/§2):
@@ -273,7 +293,7 @@ A task with no matching parent epic won't surface to any controller's
 its own one `--parent <epicId>`).
 
 **First tracking issue, dogfooding this convention:** `ops-djbclark-bc9`
-(now parented under the Shizuku epic `ops-djbclark-bk7`) — the
+(parented under the Shizuku epic `ops-djbclark-bk7`) — the
 orphaned-checkout anomaly found in `~/src/Shizuku` during this migration
 (also filed as
 [ops-djbclark#1](https://github.com/djbclark/ops-djbclark/issues/1) since
@@ -282,25 +302,48 @@ fixed — tracked only, per explicit instruction.
 
 **First live run, 2026-08-01 — caught a real bug, not a clean pass.** The
 very first `ralph-tui run` (headless, single iteration, against
-`site-djbclark`, back when scoping was still label-based) picked up
+`site-djbclark`, back when scoping was still label-based, and back when
+the controller still ran from `main/site-djbclark`) picked up
 `ops-djbclark-bc9` (a *different* repo's task) instead of the seeded
 `ops-djbclark-fws`, and spent several tool calls investigating (and
 concluding "safe to delete") a branch on the `~/src/Shizuku` standalone
 checkout — work explicitly flagged as hands-off. Caught and stopped via
 `TaskStop` before anything destructive happened; verified via `git reflog`
-that nothing was modified. This is what led directly to the epic-scoping
-fix in §2/§4a — **do not trust a clean exit code as proof scoping worked;
-verify the picked task's ID against the epic's children yourself before
-letting the agent touch anything, every time you go live with a new
-controller for the first time.**
+that nothing was modified. This is what led to the epic-scoping fix.
+Filed upstream: [subsy/ralph-tui#401](https://github.com/subsy/ralph-tui/issues/401).
 
-**Not done yet:** the epic-scoping fix has been verified empirically at
-the `bd`/`bv` CLI level (`bd list --parent`, `bd ready --parent` both
-confirmed correct against the real DB) but not yet through an actual
-`ralph-tui run` end-to-end. That's the next step — re-run the
-`site-djbclark` controller live and confirm the iteration log shows
-`ops-djbclark-fws`, not some other repo's task, before trusting any other
-controller to go live.
+**Re-run, same day, after the epic-scoping fix — verified correct, not
+just at the CLI level.** Re-ran the `site-djbclark` controller live a
+second time (still from `main/site-djbclark` — this predates the cwd
+relocation): it correctly picked `ops-djbclark-fws`, verified against
+`Epic: ops-djbclark-6ub` in the session header/iteration log *before*
+letting the agent proceed. The task completed cleanly (`max_iterations`
+exit, no errors) and produced a real, substantive, well-hedged research
+comment on the source GitHub issue
+([djbclark/site-djbclark#35](https://github.com/djbclark/site-djbclark/issues/35))
+— independently re-verified via `gh issue view`, not just trusted from the
+controller's self-report. It correctly declined to close the issue itself,
+per the task's own instruction to leave that for explicit confirmation.
+
+**Standing rule going forward, not optional:** do not trust a clean exit
+code alone as proof scoping worked. Verify the picked task's ID against
+`bd list --parent <epicId>` yourself before letting the agent touch
+anything, every time a controller goes live for the first time (or after
+any config change to how it's invoked).
+
+**Open policy question, not yet resolved:** the site-djbclark run posting
+directly to a live GitHub issue was a reasonable reading of that
+particular task ("paste this into a fresh AI session for an independent
+read"), but it's a new class of consequence beyond local file/commit
+changes — external, visible, on a real repo — that nobody explicitly
+pre-gated. Decide, before the next controller run that could plausibly
+produce an external action (GitHub comments/issues/PRs), whether that
+needs its own review gate distinct from `autoCommit`.
+
+**Not yet done:** the epic-scoping fix has only been live-validated for
+`site-djbclark`. The other three controllers (`stayturgid`, `site-private`,
+`Shizuku`) are configured and `doctor`-validated but have never gone live
+— watch each one's first real iteration the same way.
 
 ## 4. Before trusting any of this in production
 
