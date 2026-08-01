@@ -51,6 +51,22 @@ pane/tab layout conventions still apply to anything Ralph doesn't cover
   `parallel.maxWorkers: 3`, `parallel.worktreeDir: '.ralph-tui/worktrees'`,
   `parallel.directMerge: false`, `conflictResolution.enabled: true`,
   `conflictResolution.timeoutMs: 120000`.
+- **`bv --robot-next`/`--robot-triage` silently ignore `--label` — confirmed
+  broken 2026-08-01 on the first live run, filed as
+  [subsy/ralph-tui#401](https://github.com/subsy/ralph-tui/issues/401).**
+  `bv --help` documents `-l/--label` as scoping only
+  `--robot-insights`/`--robot-plan`/`--robot-priority`; empirically it's a
+  no-op for `--robot-next`/`--robot-triage` (identical top pick regardless
+  of the label value, even a nonexistent one). The flag that does filter
+  (`--robot-by-label`) requires `--robot-priority` and hard-errors when
+  combined with `--robot-next`/`--robot-triage`. `beads-bv`'s `getNextTask()`
+  verifies its epic-scoped pick against `bd list --parent <epicId>` and
+  falls back to the base `beads` tracker (`bd ready --parent`) if bv's pick
+  doesn't belong — but has **no equivalent verification for labels**, so a
+  label-scoped `beads-bv` tracker can silently hand an agent a task from a
+  different repo entirely, with no error. **§2 below now uses epic-based
+  scoping, not labels, because of this.** See the guide's git history for
+  the superseded label-only design if you need it for context.
 
 ## 1. Standard setup — simple single-repo project (the common case)
 
@@ -113,16 +129,27 @@ site-private / Shizuku:
   draft of this guide assumed the #397 workaround was required and had
   placeholder `.beads/` dirs scaffolded into all four repos; that was wrong
   and has been corrected/removed.)
-- **Routing which repo a task belongs to: Beads labels, not ID prefixes.**
-  Confirmed by reading `beads-bv`'s actual arg-building code — it only ever
-  forwards the *first* configured label as `--label <value>` to `bv`
-  (`labels[0]`, never a real multi-label filter). So each repo's config
-  carries exactly one routing label: `repo:stayturgid`, `repo:site-djbclark`,
-  `repo:site-private`, `repo:shizuku`. ID-prefix-based routing (via `bd repo
-  add`/federation + `.bv/workspace.yaml` `--repo <prefix>`) is real and
-  works at the `bd`/`bv` CLI level, but Ralph's shipped tracker plugin
-  doesn't forward `--workspace`/`--repo` to `bv` at all — only labels are
-  actually wired into Ralph's own task-selection path.
+- **Routing which repo a task belongs to: a per-repo Beads epic, not
+  labels.** (Corrected 2026-08-01 after the first live run — see §0's `bv
+  --label` gotcha and `docs/ralph-tui-setup-guide.md` git history for the
+  superseded label-only design; do not resurrect it.) Each repo gets one
+  epic issue in the shared `ops-djbclark` DB (`bd create "<repo> controller
+  epic" --type epic`), and its `.ralph-tui/config.toml` sets
+  `trackers.options.epicId` to that epic's ID. `beads-bv`'s `getNextTask()`
+  verifies bv's top pick is actually a child of the configured epic
+  (`bd list --parent <epicId>`) and falls back to the base `beads` tracker's
+  `bd ready --parent <epicId>` selection if not — both empirically confirmed
+  correct against the real DB (2026-08-01). This keeps bv's full
+  graph-aware smart selection (PageRank/centrality) in play when it picks
+  correctly, with a verified-correct fallback when it doesn't — unlike
+  switching to the plain `beads` tracker, which would lose smart selection
+  entirely. `repo:*` labels are kept on every task as human-readable
+  metadata/bd-query convenience only — **never rely on them for task
+  scoping**, `bv` doesn't honor them for `--robot-next`/`--robot-triage`.
+  ID-prefix-based routing (via `bd repo add`/federation +
+  `.bv/workspace.yaml` `--repo <prefix>`) remains a real, unused
+  alternative at the `bd`/`bv` CLI level if epic-scoping ever proves
+  insufficient — revisit only if needed.
 - `autoCommit: false` in every config for now — deliberate, this is the
   scaffolding phase. Flip to `true` per-repo only once you're ready to run
   parallel workers there (see §0's cross-key interaction).
@@ -214,54 +241,88 @@ Usage pattern going forward:
   Remove the task workspace once the PR is merged or closed, same as any
   other task workspace.
 
-## 4a. As-built quick reference (2026-08-01, scaffolded, no live run yet)
+## 4a. As-built quick reference (updated 2026-08-01 after epic-scoping fix)
 
-| Repo | `.ralph-tui/config.toml` | Routing label |
-|---|---|---|
-| stayturgid | `~/src/ops-worktrees/main/stayturgid/.ralph-tui/config.toml` | `repo:stayturgid` |
-| site-djbclark | `~/src/ops-worktrees/main/site-djbclark/.ralph-tui/config.toml` | `repo:site-djbclark` |
-| site-private | `~/src/ops-worktrees/main/site-private/.ralph-tui/config.toml` | `repo:site-private` |
-| Shizuku | `~/src/ops-worktrees/main/Shizuku/.ralph-tui/config.toml` | `repo:shizuku` |
+| Repo | `.ralph-tui/config.toml` | Controller epic (`epicId`) | Routing label (metadata only) |
+|---|---|---|---|
+| stayturgid | `~/src/ops-worktrees/main/stayturgid/.ralph-tui/config.toml` | `ops-djbclark-cr0` | `repo:stayturgid` |
+| site-djbclark | `~/src/ops-worktrees/main/site-djbclark/.ralph-tui/config.toml` | `ops-djbclark-6ub` | `repo:site-djbclark` |
+| site-private | `~/src/ops-worktrees/main/site-private/.ralph-tui/config.toml` | `ops-djbclark-6qp` | `repo:site-private` |
+| Shizuku | `~/src/ops-worktrees/main/Shizuku/.ralph-tui/config.toml` | `ops-djbclark-bk7` | `repo:shizuku` |
 
 All four: `defaultAgent = "claude"`, `defaultTracker = "beads-bv"`,
 `autoCommit = false`, `trackers.options.workingDir =
-"/Users/djbclark/src/ops-worktrees/main/ops-djbclark"`.
+"/Users/djbclark/src/ops-worktrees/main/ops-djbclark"`,
+`trackers.options.epicId = "<that repo's epic ID above>"`.
 
 Validated with `ralph-tui doctor` from `main/stayturgid` — HEALTHY, Claude
-Code CLI detected and preflight-responsive.
+Code CLI detected and preflight-responsive. (That validation predates the
+epic-scoping fix but only exercises agent preflight, not tracker routing,
+so it's still valid.)
 
-**When filing a task meant for a specific repo's controller, tag it:**
+**When filing a task meant for a specific repo's controller, parent it
+under that repo's epic** (labels are metadata only — see §0/§2):
 ```bash
 cd ~/src/ops-worktrees/main/ops-djbclark
-bd create "Title" --labels repo:stayturgid   # or repo:site-djbclark / repo:site-private / repo:shizuku
+bd create "Title" --type task --parent ops-djbclark-6ub --labels repo:site-djbclark
+# or reparent an existing task:
+bd update <id> --parent ops-djbclark-6ub
 ```
-A task with no matching label won't surface to any controller's
-`--robot-next`/`--robot-triage` (each only asks for its own one label).
+A task with no matching parent epic won't surface to any controller's
+`--robot-next`/`--robot-triage`/`bd ready` selection (each only asks for
+its own one `--parent <epicId>`).
 
 **First tracking issue, dogfooding this convention:** `ops-djbclark-bc9`
-(labeled `repo:shizuku`) — the orphaned-checkout anomaly found in
-`~/src/Shizuku` during this migration (also filed as
+(now parented under the Shizuku epic `ops-djbclark-bk7`) — the
+orphaned-checkout anomaly found in `~/src/Shizuku` during this migration
+(also filed as
 [ops-djbclark#1](https://github.com/djbclark/ops-djbclark/issues/1) since
 `djbclark/Shizuku` has GitHub issues disabled). Not investigated further or
 fixed — tracked only, per explicit instruction.
 
-**Not done yet, deliberately paused here:** no `ralph-tui run` has been
-invoked for real against any of these four repos. Config is scaffolded and
-`doctor`-validated only. Next step when ready to go live: pick one repo,
-review its `config.toml` once more, then `ralph-tui run` from that repo's
-`main/` worktree and watch the first iteration closely before trusting it
-unsupervised.
+**First live run, 2026-08-01 — caught a real bug, not a clean pass.** The
+very first `ralph-tui run` (headless, single iteration, against
+`site-djbclark`, back when scoping was still label-based) picked up
+`ops-djbclark-bc9` (a *different* repo's task) instead of the seeded
+`ops-djbclark-fws`, and spent several tool calls investigating (and
+concluding "safe to delete") a branch on the `~/src/Shizuku` standalone
+checkout — work explicitly flagged as hands-off. Caught and stopped via
+`TaskStop` before anything destructive happened; verified via `git reflog`
+that nothing was modified. This is what led directly to the epic-scoping
+fix in §2/§4a — **do not trust a clean exit code as proof scoping worked;
+verify the picked task's ID against the epic's children yourself before
+letting the agent touch anything, every time you go live with a new
+controller for the first time.**
+
+**Not done yet:** the epic-scoping fix has been verified empirically at
+the `bd`/`bv` CLI level (`bd list --parent`, `bd ready --parent` both
+confirmed correct against the real DB) but not yet through an actual
+`ralph-tui run` end-to-end. That's the next step — re-run the
+`site-djbclark` controller live and confirm the iteration log shows
+`ops-djbclark-fws`, not some other repo's task, before trusting any other
+controller to go live.
 
 ## 4. Before trusting any of this in production
 
-- Verify `source_repo` actually appears in `bd list --json` output against
-  the real installed `bd` v1.1.2 — the Go struct tag (`json:"-"`) says it
-  shouldn't, the docs' worked examples say it does. Don't guess; run it.
+- **Resolved 2026-08-01:** `source_repo` confirmed absent from `bd list
+  --json` (bd v1.1.2) — struct tag was right, docs' worked example was
+  wrong.
 - Re-check subsy/ralph-tui#397 periodically — it's a real bug, not a
   documented feature; a fix could change or remove the empty-`.beads/`
-  workaround's necessity.
+  workaround's necessity. (Still not applicable to this design either way
+  — see §0.)
+- **New 2026-08-01:** re-check
+  [subsy/ralph-tui#401](https://github.com/subsy/ralph-tui/issues/401)
+  (the `beads-bv` label-verification gap that made the original label-based
+  design unsafe) periodically — if it's fixed upstream, labels could
+  become a viable *additional* filter again, but epic-based scoping should
+  stay the primary mechanism regardless since it has a verified-correct
+  fallback path and labels don't.
 - The `beads-bv` tracker plugin not forwarding `--workspace`/`--repo` to
   `bv` means any BV-native multi-repo view has to be driven outside Ralph
   for now. If cross-repo task routing becomes a frequent pain point, that's
   the specific, narrow fork target (`src/plugins/trackers/builtin/beads-bv/index.ts`)
   — not a reason to fork more broadly.
+- Always watch the first live iteration of any new controller closely and
+  verify the picked task ID against `bd list --parent <epicId>` yourself —
+  see §4a's 2026-08-01 first-live-run writeup for why this isn't optional.

@@ -7,22 +7,33 @@ or infrastructure config of its own.
 
 ## Orchestrated repos
 
-| Repo | Role | Routing label |
-|------|------|--------------------|
-| [djbclark/stayturgid](https://github.com/djbclark/stayturgid) | Android device automation / ops tooling | `repo:stayturgid` |
-| [djbclark/site-djbclark](https://github.com/djbclark/site-djbclark) | Public site / ansible playbooks | `repo:site-djbclark` |
-| [djbclark/site-private](https://github.com/djbclark/site-private) | Private site config + agent memory | `repo:site-private` |
-| [djbclark/Shizuku](https://github.com/djbclark/Shizuku) | Fork (RikkaApps → thedjchi → djbclark) providing the Android permission broker stayturgid depends on | `repo:shizuku` |
+| Repo | Role | Controller epic | Routing label (metadata only) |
+|------|------|------------------|--------------------|
+| [djbclark/stayturgid](https://github.com/djbclark/stayturgid) | Android device automation / ops tooling | `ops-djbclark-cr0` | `repo:stayturgid` |
+| [djbclark/site-djbclark](https://github.com/djbclark/site-djbclark) | Public site / ansible playbooks | `ops-djbclark-6ub` | `repo:site-djbclark` |
+| [djbclark/site-private](https://github.com/djbclark/site-private) | Private site config + agent memory | `ops-djbclark-6qp` | `repo:site-private` |
+| [djbclark/Shizuku](https://github.com/djbclark/Shizuku) | Fork (RikkaApps → thedjchi → djbclark) providing the Android permission broker stayturgid depends on | `ops-djbclark-bk7` | `repo:shizuku` |
 
 All issues live in **this repo's single shared Beads DB** — not one DB
 per code repo. Every per-repo Ralph controller's tracker config points
-`workingDir` at this same checkout and filters with `--label <routing
-label>` (Ralph's `beads-bv` tracker only ever forwards the *first* configured
-label, so one routing label per repo, no multi-label filtering). This was
-chosen over true Beads federation (`bd repo add`/per-repo `.beads/` +
-distinct ID prefixes) because everything runs on one machine — one shared
-directory sidesteps Dolt-remote/JSONL sync entirely. Revisit federation only
-if controllers ever need to run from different machines.
+`workingDir` at this same checkout and scopes with `trackers.options.epicId`
+set to that repo's controller epic (each repo's task graph lives as
+children of its epic). **Routing is epic-based, not label-based** — an
+earlier design used `--label <routing label>` instead, but `bv
+--robot-next`/`--robot-triage` were found (2026-08-01, first live run) to
+silently ignore `--label` entirely, and `beads-bv` has no fallback
+verification for labels the way it does for epics. See
+`docs/ralph-tui-setup-guide.md` §0/§2 and
+[subsy/ralph-tui#401](https://github.com/subsy/ralph-tui/issues/401) for
+the full story. `repo:*` labels are still applied to every task for
+human-readable filtering/search convenience, just never relied on for
+controller scoping.
+
+This shared-DB-plus-epic scheme was chosen over true Beads federation
+(`bd repo add`/per-repo `.beads/` + distinct ID prefixes) because
+everything runs on one machine — one shared directory sidesteps
+Dolt-remote/JSONL sync entirely. Revisit federation only if controllers
+ever need to run from different machines.
 
 ## Why this repo exists
 
