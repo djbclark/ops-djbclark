@@ -79,44 +79,53 @@ multi-repo glue.
 That's the whole story for a simple project. Everything below is only for
 the multi-repo ops suite (and now Shizuku — see §3).
 
-## 2. Multi-repo pattern — stayturgid / site-djbclark / site-private
+## 2. Multi-repo pattern — as actually built (2026-08-01)
 
-**Ralph cannot orchestrate all three as one session** (see §0). The
-realistic pattern, confirmed feasible from source:
+**Ralph cannot orchestrate multiple repos as one session** (see §0). The
+pattern actually implemented, across stayturgid / site-djbclark /
+site-private / Shizuku:
 
-- **One Ralph "controller" run per repo**, each invoked with
-  `--cwd <that-repo's-worktree>`.
-- **A shared control-plane Beads DB** — either a dedicated 4th repo holding
-  only `.beads/` + shared `config.toml` fragments, or (simpler to start)
-  one of the three repos' own `.beads/` promoted to "primary" via
-  `bd repo add <path>` pulling in the others as `additional`.
-- Each per-repo Ralph's tracker config sets
-  `trackers[].options.workingDir` to the control-plane repo's path, so all
-  three controllers read/write the same task graph while each agent process
-  still edits code in its own repo's `cwd`.
-- **Apply the #397 workaround** in each per-repo `cwd`: an empty
-  `.beads/` placeholder directory, with the real store reached via
-  `BEADS_DIR` env var (or `--db`) pointing at the control-plane.
-- **Routing which repo a task belongs to**: `bd repo add/sync` tags
-  hydrated issues with `SourceRepo`, but this field is `json:"-"` in the Go
-  struct — **verify empirically** (`bd list --json | jq '.[0]'`) whether
-  `source_repo` actually appears in JSON output before depending on it for
-  routing. The robust fallback that's guaranteed visible either way: give
-  each repo its own `bd` issue-ID prefix (e.g. `st-`, `sd-`, `sp-`) and
-  route/filter by prefix. Beads Viewer's `.bv/workspace.yaml`
-  (`repos[].prefix`, `--repo <prefix>` CLI flag) already models this
-  natively — but Ralph's shipped `beads-bv` tracker plugin does **not**
-  forward `--workspace`/`--repo` to `bv` (checked `execBv()` call sites
-  directly — only `--robot-next`/`--robot-triage`/`--label` are ever
-  passed). Using BV's workspace/prefix view from *inside* Ralph requires
-  forking `src/plugins/trackers/builtin/beads-bv/index.ts` to append those
-  flags; without that fork, prefix-based routing has to happen in whatever
-  is deciding *which* per-repo Ralph controller to hand a task to (i.e.
-  external to Ralph itself, e.g. bare `bv --workspace ... --repo ...`
-  queries run by you/an orchestrating script, not by Ralph's own task
-  selection).
-- If any repo needs parallel workers, remember `autoCommit: true` is
-  mandatory for that repo's config.
+- **One Ralph "controller" run per repo**, each invoked from
+  `~/src/ops-worktrees/main/<repo>` (its own `cwd`).
+- **One single shared Beads DB**, not per-repo federation — the
+  control-plane repo `djbclark/ops-djbclark`
+  (`~/src/ops-worktrees/main/ops-djbclark`, `.beads/` prefix `ops-djbclark`).
+  Chosen over `bd repo add`/federation because every controller runs on the
+  same machine — one shared directory sidesteps Dolt-remote/JSONL sync
+  entirely. `SourceRepo`'s `json:"-"` tag / federation's per-repo-prefix
+  metadata (both real, both investigated in §Q5 of the original research
+  report) turned out to be unnecessary complexity for a single-machine
+  setup — don't reach for federation unless controllers ever need to run
+  from different machines.
+- Each repo's `.ralph-tui/config.toml` sets
+  `trackers[].options.workingDir` to the **absolute path** of
+  `ops-djbclark`'s checkout directly — not a `BEADS_DIR` env var. Verified
+  against actual `beads-bv` source
+  (`getWorkingDir()`/`detect()` in `src/plugins/trackers/builtin/beads-bv/index.ts`):
+  `detect()`'s readiness check is `access(join(workingDir, beadsDir))`, and
+  `getWorkingDir()` returns the configured `workingDir` verbatim. Pointing
+  it straight at the control-plane's absolute path makes the check pass
+  against the *real* `.beads/` there — **no empty local `.beads/`
+  placeholder needed in any of the four orchestrated repos.**
+  subsy/ralph-tui#397 is a real, separate bug — specifically about the
+  `BEADS_DIR` *env var* path when no `workingDir` override is configured —
+  not applicable here since this design doesn't use that path. (An earlier
+  draft of this guide assumed the #397 workaround was required and had
+  placeholder `.beads/` dirs scaffolded into all four repos; that was wrong
+  and has been corrected/removed.)
+- **Routing which repo a task belongs to: Beads labels, not ID prefixes.**
+  Confirmed by reading `beads-bv`'s actual arg-building code — it only ever
+  forwards the *first* configured label as `--label <value>` to `bv`
+  (`labels[0]`, never a real multi-label filter). So each repo's config
+  carries exactly one routing label: `repo:stayturgid`, `repo:site-djbclark`,
+  `repo:site-private`, `repo:shizuku`. ID-prefix-based routing (via `bd repo
+  add`/federation + `.bv/workspace.yaml` `--repo <prefix>`) is real and
+  works at the `bd`/`bv` CLI level, but Ralph's shipped tracker plugin
+  doesn't forward `--workspace`/`--repo` to `bv` at all — only labels are
+  actually wired into Ralph's own task-selection path.
+- `autoCommit: false` in every config for now — deliberate, this is the
+  scaffolding phase. Flip to `true` per-repo only once you're ready to run
+  parallel workers there (see §0's cross-key interaction).
 
 Net effect: this is **coordination via a shared task graph**, not a single
 merged git session. Each repo's own release process (the `just
@@ -204,6 +213,44 @@ Usage pattern going forward:
   `thedjchi/Shizuku` depending which layer the fix targets) from there.
   Remove the task workspace once the PR is merged or closed, same as any
   other task workspace.
+
+## 4a. As-built quick reference (2026-08-01, scaffolded, no live run yet)
+
+| Repo | `.ralph-tui/config.toml` | Routing label |
+|---|---|---|
+| stayturgid | `~/src/ops-worktrees/main/stayturgid/.ralph-tui/config.toml` | `repo:stayturgid` |
+| site-djbclark | `~/src/ops-worktrees/main/site-djbclark/.ralph-tui/config.toml` | `repo:site-djbclark` |
+| site-private | `~/src/ops-worktrees/main/site-private/.ralph-tui/config.toml` | `repo:site-private` |
+| Shizuku | `~/src/ops-worktrees/main/Shizuku/.ralph-tui/config.toml` | `repo:shizuku` |
+
+All four: `defaultAgent = "claude"`, `defaultTracker = "beads-bv"`,
+`autoCommit = false`, `trackers.options.workingDir =
+"/Users/djbclark/src/ops-worktrees/main/ops-djbclark"`.
+
+Validated with `ralph-tui doctor` from `main/stayturgid` — HEALTHY, Claude
+Code CLI detected and preflight-responsive.
+
+**When filing a task meant for a specific repo's controller, tag it:**
+```bash
+cd ~/src/ops-worktrees/main/ops-djbclark
+bd create "Title" --labels repo:stayturgid   # or repo:site-djbclark / repo:site-private / repo:shizuku
+```
+A task with no matching label won't surface to any controller's
+`--robot-next`/`--robot-triage` (each only asks for its own one label).
+
+**First tracking issue, dogfooding this convention:** `ops-djbclark-bc9`
+(labeled `repo:shizuku`) — the orphaned-checkout anomaly found in
+`~/src/Shizuku` during this migration (also filed as
+[ops-djbclark#1](https://github.com/djbclark/ops-djbclark/issues/1) since
+`djbclark/Shizuku` has GitHub issues disabled). Not investigated further or
+fixed — tracked only, per explicit instruction.
+
+**Not done yet, deliberately paused here:** no `ralph-tui run` has been
+invoked for real against any of these four repos. Config is scaffolded and
+`doctor`-validated only. Next step when ready to go live: pick one repo,
+review its `config.toml` once more, then `ralph-tui run` from that repo's
+`main/` worktree and watch the first iteration closely before trusting it
+unsupervised.
 
 ## 4. Before trusting any of this in production
 

@@ -7,12 +7,22 @@ or infrastructure config of its own.
 
 ## Orchestrated repos
 
-| Repo | Role | `bd` issue prefix |
+| Repo | Role | Routing label |
 |------|------|--------------------|
-| [djbclark/stayturgid](https://github.com/djbclark/stayturgid) | Android device automation / ops tooling | `st-` |
-| [djbclark/site-djbclark](https://github.com/djbclark/site-djbclark) | Public site / ansible playbooks | `sd-` |
-| [djbclark/site-private](https://github.com/djbclark/site-private) | Private site config + agent memory | `sp-` |
-| [djbclark/Shizuku](https://github.com/djbclark/Shizuku) | Fork (RikkaApps → thedjchi → djbclark) providing the Android permission broker stayturgid depends on | `shz-` |
+| [djbclark/stayturgid](https://github.com/djbclark/stayturgid) | Android device automation / ops tooling | `repo:stayturgid` |
+| [djbclark/site-djbclark](https://github.com/djbclark/site-djbclark) | Public site / ansible playbooks | `repo:site-djbclark` |
+| [djbclark/site-private](https://github.com/djbclark/site-private) | Private site config + agent memory | `repo:site-private` |
+| [djbclark/Shizuku](https://github.com/djbclark/Shizuku) | Fork (RikkaApps → thedjchi → djbclark) providing the Android permission broker stayturgid depends on | `repo:shizuku` |
+
+All issues live in **this repo's single shared Beads DB** — not one DB
+per code repo. Every per-repo Ralph controller's tracker config points
+`workingDir` at this same checkout and filters with `--label <routing
+label>` (Ralph's `beads-bv` tracker only ever forwards the *first* configured
+label, so one routing label per repo, no multi-label filtering). This was
+chosen over true Beads federation (`bd repo add`/per-repo `.beads/` +
+distinct ID prefixes) because everything runs on one machine — one shared
+directory sidesteps Dolt-remote/JSONL sync entirely. Revisit federation only
+if controllers ever need to run from different machines.
 
 ## Why this repo exists
 
@@ -25,11 +35,20 @@ that repo's own `--cwd`, with every controller's tracker
 of a repo-local one. That gives each repo's coding agent its own git root
 while sharing one task graph across all of them.
 
-Each orchestrated repo also carries an empty local `.beads/` placeholder
-directory (workaround for
-[subsy/ralph-tui#397](https://github.com/subsy/ralph-tui/issues/397) — an
-open, unfixed bug where Ralph's tracker-readiness check requires a
-*local* `.beads/` to exist even when `BEADS_DIR` points elsewhere).
+Each orchestrated repo's `.ralph-tui/config.toml` sets
+`trackers[].options.workingDir` to this repo's **absolute path** directly
+(not a `BEADS_DIR` env var). That's a deliberate choice, confirmed against
+`beads-bv`'s actual source
+(`getWorkingDir()`/`detect()` in `src/plugins/trackers/builtin/beads-bv/index.ts`):
+`detect()`'s readiness check is `access(join(workingDir, beadsDir))`, and
+`getWorkingDir()` returns the configured `workingDir` verbatim — so pointing
+it straight at this repo's absolute path makes the check pass against the
+*real* `.beads/` here, with no local placeholder needed in the orchestrated
+repos at all. [subsy/ralph-tui#397](https://github.com/subsy/ralph-tui/issues/397)
+is a real, separate bug (about the `BEADS_DIR` *env var* path specifically,
+when no `workingDir` override is configured) — not applicable to this setup
+since we don't use that path, but still worth the upstream fix and worth
+re-checking if this design ever changes to rely on `BEADS_DIR` instead.
 
 ## What does NOT live here
 
