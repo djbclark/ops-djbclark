@@ -369,12 +369,63 @@ posted 2026-08-01T23:39:50Z), issue correctly left open, bd bead correctly
 closed. This is the clearest evidence yet that "task scope is the real
 control" holds under real conditions, not just as a policy statement.
 
-**Not yet done:** `site-private` and `Shizuku` remain unvalidated —
-`Shizuku` has a properly hands-off-scoped task waiting
-(`ops-djbclark-bc9`) if it's ever picked up; `site-private` has no task
-seeded yet. **Operator explicitly paused here (2026-08-02)** to check in
-given how much shipped this session — do not seed or bring up a third
-controller without that check-in first.
+**Third and fourth controllers live-validated, 2026-08-02: `site-private`
+and `Shizuku` — all 4 of 4 repos now done.** Same discipline both times:
+seed a research-only task, verify epic in the session header before
+letting the agent proceed, independently re-verify the real outcome after
+(`git status`, `gh issue view`, `bd show`), never trust the status label
+alone. Two new operational findings, neither a safety problem:
+
+- **Ralph's own completion status can read false-negative.**
+  `site-private`'s run (`ops-djbclark-6qp.1` — researched which process
+  regenerates `memory/codex/{memory_summary,raw_memories}.md`; answer:
+  Codex CLI's native `memories` feature, not a script/hook, and the
+  last-writer-wins whole-file regen is exactly what caused the earlier PR
+  #3 conflict) did all its real work correctly — comment posted, bd bead
+  closed via a direct `bd close` call — but Ralph's own summary showed
+  `Status: INTERRUPTED` / `Tasks: 0/1 completed`, because the agent never
+  emitted the `<promise>COMPLETE</promise>` tag Ralph's tracker watches
+  for. Independently verified the real state was fully correct anyway.
+  Mirror image of the very first incident (that one was a false
+  *positive* clean exit) — the lesson is symmetric: never trust the
+  status label in either direction, always check the real external/data
+  state directly.
+- **Two ready tasks under one epic → use `bd update <id> --defer "+Nh"`
+  to deterministically exclude one from `bd ready`.** Needed for Shizuku:
+  `ops-djbclark-bc9` (hands-off) and the newly-seeded
+  `ops-djbclark-bk7.1` (research-only, genuinely safe) were both
+  open/ready under the same epic at once, and the validation needed to
+  exercise the new task specifically, not bc9. Deferred bc9 `+2h` before
+  the run (confirmed via `bd ready --parent ops-djbclark-bk7` dropping to
+  just the one task), ran the controller, cleared the defer (`--defer
+  ""`) afterward. Clean and fully reversible — general pattern for
+  whenever an epic has more than one ready task and a specific one needs
+  to run deterministically, since there's no CLI flag to target a single
+  task ID directly.
+- **Minor gotcha for `bd comment`-based deliverables:** unlike `gh`
+  (resolves via `--repo`, no cwd-dependence), a bare `bd comment <id> ...`
+  run from the *controller's own cwd* (a target repo, not the
+  control-plane repo) fails with `Error: no beads database found`.
+  Shizuku's run hit this and self-recovered on retry using the `--db
+  <path>` hint from the error text — but future tasks whose deliverable
+  is a `bd comment` should just include the explicit `--db
+  /Users/djbclark/src/ops-worktrees/main/ops-djbclark/.beads/...` path up
+  front rather than relying on that self-recovery.
+
+Shizuku's task itself (`ops-djbclark-bk7.1`) completed with a real, clean
+`COMPLETED`/`Tasks: 1/1` this time (no status-label anomaly on this one)
+and produced a genuinely useful table comparing `FleetProfileApplier`'s 8
+hardcoded keys against the full preference surface found across
+`ShizukuSettings.java` + `settings.xml` + `SettingsFragment.kt`. Zero
+code changes, zero device commands, no stray GitHub issue created —
+independently verified via `git status` and `gh issue list`.
+
+**FINAL STATUS: all 4 controllers (stayturgid, site-djbclark,
+site-private, Shizuku) live-validated, same discipline every time.** This
+migration's build phase is complete. Per the operator (2026-08-02): next
+step is handing off to the operator to update Herdr itself — not part of
+this guide's scope, noting the handoff point here so a future session
+doesn't mistake this for still-in-progress.
 
 ## 4. Before trusting any of this in production
 
