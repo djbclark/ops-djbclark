@@ -469,12 +469,12 @@ The feeder runs in the background (via launchd) checking the queue and opening/a
 
 List the queue:
 ```bash
-uv run --directory ~/src/coderabbit-feeder manage-queue list
+uv run --directory ~/src/coderabbit-feeder coderabbit-feeder list
 ```
 
 Add an existing PR to the queue (attach mode, skipping branch creation and PR opening, and just triggering a review on the PR):
 ```bash
-uv run --directory ~/src/coderabbit-feeder manage-queue add owner/repo 123 --front
+uv run --directory ~/src/coderabbit-feeder coderabbit-feeder add owner/repo 123 --front
 ```
 
 This is especially useful for PRs on repos we don't own (e.g. `thedjchi/Shizuku-API`), where we can manually attach the PR to the queue to have the feeder trigger the review.
