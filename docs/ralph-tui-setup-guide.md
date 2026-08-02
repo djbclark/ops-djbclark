@@ -451,3 +451,30 @@ doesn't mistake this for still-in-progress.
 - Always watch the first live iteration of any new controller closely and
   verify the picked task ID against `bd list --parent <epicId>` yourself —
   see §4a's 2026-08-01 first-live-run writeup for why this isn't optional.
+
+## 5. CodeRabbit Feeder (Soft Dependency)
+
+The ops suite includes a soft dependency on [coderabbit-feeder](https://github.com/djbclark/coderabbit-feeder) (`~/src/coderabbit-feeder`), which orchestrates CodeRabbit AI reviews across our repos to work around per-repo installation boundaries and review rate limits.
+
+### Installation
+
+```bash
+cd ~/src/coderabbit-feeder
+uv sync
+```
+
+### Usage
+
+The feeder runs in the background (via launchd) checking the queue and opening/attaching PRs to trigger CodeRabbit reviews. You can manually manage its queue using the included CLI tool.
+
+List the queue:
+```bash
+uv run --directory ~/src/coderabbit-feeder manage-queue list
+```
+
+Add an existing PR to the queue (attach mode, skipping branch creation and PR opening, and just triggering a review on the PR):
+```bash
+uv run --directory ~/src/coderabbit-feeder manage-queue add owner/repo 123 --front
+```
+
+This is especially useful for PRs on repos we don't own (e.g. `thedjchi/Shizuku-API`), where we can manually attach the PR to the queue to have the feeder trigger the review.

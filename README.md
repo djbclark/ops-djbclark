@@ -76,3 +76,7 @@ re-checking if this design ever changes to rely on `BEADS_DIR` instead.
 
 See the full setup writeup (agent-facing, not yet migrated into this repo)
 for the researched rationale behind these choices.
+
+## Related Tools (Soft Dependencies)
+
+- **[coderabbit-feeder](https://github.com/djbclark/coderabbit-feeder)**: A queue-based orchestrator (`~/src/coderabbit-feeder`) that feeds PRs to CodeRabbit AI to work around rate limits and installation boundaries. See `docs/ralph-tui-setup-guide.md` for installation and usage instructions.
