@@ -124,6 +124,11 @@ done
 
 ### Remove a task workspace
 
+Write a final Tier 2 doc first if the work is being abandoned —
+abandonment rationale is exactly the failed-approach data the
+session-handoff system exists to preserve (see site-private
+`docs/session-handoff-compaction-spec.md`).
+
 ```bash
 TASK="my-old-feature"
 for repo in .store/*.git; do
@@ -131,6 +136,7 @@ for repo in .store/*.git; do
   git -C "$repo" worktree remove "$(pwd)/$TASK/$name"
 done
 rmdir "$TASK"
+rm -rf ~/.local/state/handoffs/*/"$TASK"
 ```
 
 ### List all worktrees
