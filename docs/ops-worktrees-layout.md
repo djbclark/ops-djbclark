@@ -108,6 +108,21 @@ and current per-repo config paths.
 for repo in .store/*.git; do git -C "$repo" fetch origin; done
 ```
 
+**A bare store needs an explicit fetch refspec or this silently does nothing.**
+A repo cloned with `--bare` has no `remote.origin.fetch`, so `git fetch origin`
+updates no remote-tracking refs and `origin/master` never resolves — the fetch
+appears to succeed while the store quietly falls behind. `ops-djbclark.git` was
+in this state until 2026-08-06. Verify all stores, and repair any that are bare:
+
+```bash
+for r in .store/*.git; do
+  printf '%-22s %s\n' "$r" "$(git -C "$r" config --get remote.origin.fetch || echo '<MISSING>')"
+done
+
+# repair:
+git -C .store/<repo>.git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+```
+
 ### Create a new task workspace
 
 ```bash
@@ -115,7 +130,9 @@ TASK="my-new-feature"
 mkdir -p "$TASK"
 for repo in .store/*.git; do
   name=$(basename "$repo" .git)
-  git -C "$repo" worktree add -b "feature/$TASK" "$(pwd)/$TASK/$name" master
+  git -C "$repo" fetch origin
+  # branch from origin/master, not the store's local master, which may be stale
+  git -C "$repo" worktree add -b "feature/$TASK" "$(pwd)/$TASK/$name" origin/master
 done
 
 # Bootstrap per-worktree dependencies in stayturgid (.venv-test, node_modules, .ansible/collections):
@@ -165,3 +182,52 @@ git push origin feature/kotlin-tooling
    apply to all worktrees of that repo.
 4. **Always use the bare repo for git worktree commands** —
    `git -C .store/stayturgid.git worktree add ...`
+
+## Cross-Agent Rules
+
+Multiple AI agents share this directory — Claude Code, Hermes, Codex, `agy`, and
+the Ralph controllers. They run concurrently, often in auto-accept/YOLO mode, and
+they cannot see each other's sessions. The rules below are binding on **all** of
+them, not just the two that negotiated them.
+
+1. **Ownership by creation.** Creating `~/src/ops-worktrees/<task>/` establishes
+   ownership of that workspace until the owner explicitly releases it. A path is
+   never "available" merely because no process is visibly active there — an idle
+   workspace is an owned workspace.
+2. **Never commit into a branch you did not create.** No commits, rebases,
+   cherry-picks, resets, or pushes into another agent's branch without explicit
+   operator approval. Thematic relevance is not authorization: a change belonging
+   to the same topic is still someone else's branch.
+3. **Pre-merge provenance gate.** Before any `gh pr merge`, inspect **both**:
+
+   ```bash
+   git log  origin/<base>..HEAD    # unexpected commits
+   git diff origin/<base>...HEAD   # unexpected content
+   ```
+
+   If anything is not attributable to your own task and session, **stop and ask
+   the operator**. **Green checks do not waive this** — CI validates that the code
+   works, not that you know what you are merging.
+4. **Under YOLO/auto-accept, the gate is procedural, not interactive.** An agent
+   running without permission prompts will never be stopped by a dialog it does
+   not see. Rule 3 must be executed as an explicit step, every time, not relied on
+   as something the harness will interrupt.
+5. **One owner/integrator per workspace.** Other agents hand patches or files to
+   the owner *outside* the workspace, and the owner applies them deliberately.
+   There is no permanent shared or neutral worktree — that only moves the
+   collision surface. A neutral workspace exists only when the operator declares
+   one and names the integrator up front.
+
+**Why these exist.** On 2026-08-06, Claude Code created the task workspace
+`agent-skill-library-plan/site-djbclark`, committed, and opened `site-djbclark`
+PR #100. Fifty-nine seconds later Hermes committed into that same worktree and
+branch, treating a thematically related doc as a continuation of the same task.
+Claude Code then merged #100 without checking provenance, so `master` gained a
+231-line document nobody reviewed, under a PR whose title and description covered
+only the other change. Both agents failed independently: one wrote into a
+workspace it did not own, the other merged without verifying what it was merging.
+Neither failure required bad intent — just two agents with no way to see each
+other.
+
+**If you find foreign commits:** do not revert another agent's work unilaterally.
+Surface it to the operator with options.
