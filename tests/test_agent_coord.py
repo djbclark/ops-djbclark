@@ -16,6 +16,7 @@ from bin.agent_coord import (
     holder_alive,
     load_events,
     parse_worktree_porcelain,
+    run_guard,
     run_worker,
     validate_claim_target,
 )
@@ -284,6 +285,64 @@ class HardGateTests(unittest.TestCase):
         )
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "security_boundary_protected")
+
+
+class HerdrGuardTests(unittest.TestCase):
+    def test_guard_releases_after_nonzero_child(self):
+        with tempfile.TemporaryDirectory() as temp:
+            state = Path(temp) / "events.jsonl"
+            result = run_guard(
+                Path.cwd(),
+                root=Path.cwd().parents[1],
+                state=state,
+                agent="herdr-test",
+                holder_id="herdr-session",
+                operation="edit",
+                command=[sys.executable, "-c", "raise SystemExit(7)"],
+                ttl_seconds=10,
+            )
+            self.assertEqual(result.exit_code, 7)
+            events, errors = load_events(state)
+            self.assertFalse(errors)
+            self.assertEqual([event.event for event in events], ["claim", "release"])
+
+    def test_guard_renews_a_long_running_child(self):
+        with tempfile.TemporaryDirectory() as temp:
+            state = Path(temp) / "events.jsonl"
+            result = run_guard(
+                Path.cwd(),
+                root=Path.cwd().parents[1],
+                state=state,
+                agent="herdr-test",
+                holder_id="herdr-session",
+                operation="edit",
+                command=[sys.executable, "-c", "import time; time.sleep(1.2)"],
+                ttl_seconds=0.5,
+            )
+            self.assertEqual(result.exit_code, 0)
+            events, errors = load_events(state)
+            self.assertFalse(errors)
+            self.assertIn("renew", [event.event for event in events])
+            self.assertEqual(events[-1].event, "release")
+
+    def test_guard_reports_child_launch_failure_and_releases(self):
+        with tempfile.TemporaryDirectory() as temp:
+            state = Path(temp) / "events.jsonl"
+            result = run_guard(
+                Path.cwd(),
+                root=Path.cwd().parents[1],
+                state=state,
+                agent="herdr-test",
+                holder_id="herdr-session",
+                operation="edit",
+                command=["definitely-not-a-real-executable"],
+                ttl_seconds=10,
+            )
+            self.assertEqual(result.exit_code, 127)
+            self.assertIsNotNone(result.error)
+            events, errors = load_events(state)
+            self.assertFalse(errors)
+            self.assertEqual([event.event for event in events], ["claim", "release"])
 
 
 class WorkerRunTests(unittest.TestCase):

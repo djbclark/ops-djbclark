@@ -336,7 +336,7 @@ def _event(
     agent: str,
     holder_id: str,
     operation: str,
-    ttl_seconds: int | None,
+    ttl_seconds: float | None,
 ) -> ClaimEvent:
     created = _now()
     expiry = None if ttl_seconds is None else (created + datetime_module.timedelta(seconds=ttl_seconds)).isoformat().replace("+00:00", "Z")
@@ -361,7 +361,7 @@ def claim_workspace(
     agent: str,
     holder_id: str,
     operation: str,
-    ttl_seconds: int,
+    ttl_seconds: float,
 ) -> ClaimEvent:
     if ttl_seconds <= 0:
         raise ClaimError("ttl-seconds must be positive")
@@ -406,7 +406,7 @@ def mutate_claim(
     agent: str,
     holder_id: str,
     event_type: str,
-    ttl_seconds: int | None = None,
+    ttl_seconds: float | None = None,
 ) -> ClaimEvent:
     with _state_lock(state):
         events, errors = load_events(state)
@@ -444,6 +444,108 @@ class WorkerRun:
     timed_out: bool
     result_subtype: str | None
     session_id: str | None
+
+
+@dataclass(frozen=True)
+class GuardRun:
+    claim_id: str
+    exit_code: int
+    renewals: int
+    error: str | None
+
+
+def _terminate_child(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=2)
+    except (OSError, subprocess.TimeoutExpired):
+        try:
+            process.kill()
+        except OSError:
+            pass
+        process.wait()
+
+
+def run_guard(
+    workspace: Path,
+    *,
+    root: Path,
+    state: Path,
+    agent: str,
+    holder_id: str,
+    operation: str,
+    command: Sequence[str],
+    ttl_seconds: float,
+) -> GuardRun:
+    """Run one bounded external command while holding and renewing a claim."""
+    if not command:
+        raise ClaimError("guard command must not be empty")
+    if ttl_seconds <= 0:
+        raise ClaimError("ttl-seconds must be positive")
+    workspace = workspace.resolve()
+    claim = claim_workspace(
+        workspace,
+        root=root,
+        state=state,
+        agent=agent,
+        holder_id=holder_id,
+        operation=operation,
+        ttl_seconds=ttl_seconds,
+    )
+    process: subprocess.Popen[bytes] | None = None
+    child_exit = 130
+    renewals = 0
+    renew_error: str | None = None
+    release_error: str | None = None
+    launch_error: str | None = None
+    try:
+        process = subprocess.Popen(list(command), cwd=workspace, start_new_session=True)
+        interval = max(0.1, ttl_seconds / 3)
+        while True:
+            try:
+                child_exit = process.wait(timeout=interval)
+                break
+            except subprocess.TimeoutExpired:
+                try:
+                    mutate_claim(
+                        claim.claim_id,
+                        root=root,
+                        state=state,
+                        agent=agent,
+                        holder_id=holder_id,
+                        event_type="renew",
+                        ttl_seconds=ttl_seconds,
+                    )
+                    renewals += 1
+                except ClaimError as exc:
+                    renew_error = str(exc)
+                    _terminate_child(process)
+                    child_exit = 75
+                    break
+    except OSError as exc:
+        launch_error = str(exc)
+        child_exit = 127
+    except KeyboardInterrupt:
+        if process is not None:
+            _terminate_child(process)
+        child_exit = 130
+    finally:
+        try:
+            mutate_claim(
+                claim.claim_id,
+                root=root,
+                state=state,
+                agent=agent,
+                holder_id=holder_id,
+                event_type="release",
+            )
+        except ClaimError as exc:
+            release_error = str(exc)
+    if renew_error or release_error:
+        child_exit = 75
+    return GuardRun(claim.claim_id, child_exit, renewals, launch_error or release_error or renew_error)
 
 
 _SENSITIVE_EVENT_KEYS = frozenset(
@@ -728,6 +830,13 @@ def _parser() -> argparse.ArgumentParser:
     gate.add_argument("--claim-id")
     gate.add_argument("--target", action="append", default=[])
     gate.add_argument("--now")
+    guard = sub.add_parser("guard")
+    guard.add_argument("workspace", type=Path)
+    guard.add_argument("--agent", default=os.environ.get("AGENT_COORD_AGENT", "hermes"))
+    guard.add_argument("--holder-id", default=os.environ.get("AGENT_COORD_HOLDER_ID"))
+    guard.add_argument("--operation", default="edit")
+    guard.add_argument("--ttl-seconds", type=float, default=3600)
+    guard.add_argument("guard_argv", nargs=argparse.REMAINDER)
     run = sub.add_parser("run")
     run.add_argument("workspace", type=Path)
     run.add_argument("--prompt-file", type=Path)
@@ -745,14 +854,14 @@ def _parser() -> argparse.ArgumentParser:
     claim.add_argument("--agent", default=os.environ.get("AGENT_COORD_AGENT", "unknown"))
     claim.add_argument("--holder-id", default=os.environ.get("AGENT_COORD_HOLDER_ID"))
     claim.add_argument("--operation", default="edit")
-    claim.add_argument("--ttl-seconds", type=int, default=3600)
+    claim.add_argument("--ttl-seconds", type=float, default=3600)
     for name in ("release", "renew"):
         command = sub.add_parser(name)
         command.add_argument("claim_id")
         command.add_argument("--agent", default=os.environ.get("AGENT_COORD_AGENT", "unknown"))
         command.add_argument("--holder-id", default=os.environ.get("AGENT_COORD_HOLDER_ID"))
         if name == "renew":
-            command.add_argument("--ttl-seconds", type=int, default=3600)
+            command.add_argument("--ttl-seconds", type=float, default=3600)
     return parser
 
 
@@ -798,6 +907,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             print(json.dumps(decision.to_dict(), indent=2, sort_keys=True))
             return 0 if decision.allowed else 75
+        if args.command == "guard":
+            command = list(args.guard_argv)
+            if command and command[0] == "--":
+                command = command[1:]
+            result = run_guard(
+                args.workspace,
+                root=args.root,
+                state=args.state,
+                agent=args.agent,
+                holder_id=args.holder_id or args.agent,
+                operation=args.operation,
+                command=command,
+                ttl_seconds=args.ttl_seconds,
+            )
+            print(
+                json.dumps(
+                    {
+                        "claim_id": result.claim_id,
+                        "exit_code": result.exit_code,
+                        "renewals": result.renewals,
+                        "error": result.error,
+                    },
+                    sort_keys=True,
+                ),
+                file=sys.stderr,
+            )
+            return result.exit_code
         if args.command == "claim":
             claim = claim_workspace(
                 args.workspace,
