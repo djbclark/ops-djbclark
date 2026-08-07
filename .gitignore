@@ -7,3 +7,7 @@
 
 # bv (beads viewer) local config and caches
 .bv/
+
+# Python test/runtime artifacts
+__pycache__/
+*.py[cod]

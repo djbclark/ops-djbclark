@@ -239,6 +239,6 @@ agents followed every rule and were still one coincidence away from colliding on
 the same subsystem. See
 [agent-coordination-protocol.md](agent-coordination-protocol.md) for the
 negotiated design that makes ownership machine-checkable — including, explicitly,
-what each agent refused to commit to. That document is **design, not yet
-implemented**: until its entry points exist, these rules remain the only thing
-actually in force.
+what each agent refused to commit to. The v0 `bin/agent-coord` status/claim
+client is now available, but automatic launch hooks and hard gates are still
+staged work.

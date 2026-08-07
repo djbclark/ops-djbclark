@@ -1,6 +1,7 @@
-# Agent coordination protocol (design)
+# Agent coordination protocol
 
-**Status:** design, negotiated 2026-08-07 — not yet implemented.
+**Status:** v0 status/claim client implemented; automatic launch and hard-gate
+integration remains staged work, negotiated 2026-08-07.
 **Scope:** machine-wide, all repos and all agents, not just `~/src/ops-worktrees`.
 
 The [Cross-Agent Rules](ops-worktrees-layout.md#cross-agent-rules) say what agents
@@ -213,6 +214,34 @@ Deliberately small. In dependency order:
 4. **Explicit release/renew**, with reclaim requiring stale claim *and* dead
    holder.
 5. **Hard gates** at the four chokepoints above — only once (3) is real.
+
+### v0 implementation status
+
+The first two items now exist as the standard-library
+[`bin/agent-coord`](../bin/agent-coord) client:
+
+```bash
+bin/agent-coord status --format text
+bin/agent-coord status                 # machine-readable JSON
+bin/agent-coord claim /path/to/worktree --agent hermes --holder-id hermes-session --operation edit
+bin/agent-coord renew <claim-id> --agent hermes --holder-id hermes-session
+bin/agent-coord release <claim-id> --agent hermes --holder-id hermes-session
+```
+
+`status` is read-only. Claim lifecycle events are appended under
+`~/.local/state/agent-coord/events.jsonl` under an exclusive file lock and
+folded by readers. A claim refuses a live or non-expired holder and returns
+`EX_TEMPFAIL` (75); stale TTL alone is not enough to reclaim it. Reclaim
+requires both an expired claim and a dead local holder. Malformed event logs
+fail closed. `--holder-id` is a stable session/agent identity used across
+separate CLI processes; the recorded PID and host remain diagnostic liveness
+signals, not the sole renewal credential. Status also reports a claim/branch
+mismatch when a path has been reused for a different repository or branch.
+
+The client is deliberately not yet wired into every launch path. Until the
+automatic Herdr/worktree/daemon hooks and narrow hard gates land, the
+implementation remains advisory for ordinary edits. That limitation is
+intentional and must not be described as filesystem enforcement.
 
 Cursor's one-sentence version, worth keeping as the memorable form:
 
