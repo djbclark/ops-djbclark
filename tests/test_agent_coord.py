@@ -263,7 +263,8 @@ class WorkerRunTests(unittest.TestCase):
     def test_max_turns_is_resumable_exit_75(self):
         fake = (
             "import json; "
-            "print(json.dumps({'type':'result','subtype':'error_max_turns','session_id':'resume-me'}))"
+            "print(json.dumps({'type':'result','subtype':'error_max_turns','session_id':'resume-me'})); "
+            "raise SystemExit(1)"
         )
         with tempfile.TemporaryDirectory() as temp:
             result = run_worker(
