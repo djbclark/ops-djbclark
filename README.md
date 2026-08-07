@@ -1,9 +1,15 @@
 # ops-djbclark
 
 Control-plane repo for the djbclark ops suite's task/issue orchestration.
-Holds **only** the shared Beads DB (`.beads/`) and Ralph TUI config
-fragments used to route work across the code repos — no application code
-or infrastructure config of its own.
+Holds the shared Beads DB (`.beads/`), Ralph TUI config fragments, and the
+small standard-library `agent-coord` safety client used to report worktree
+state and append claims — no application code or infrastructure config of its
+own.
+
+The client is intentionally machine-local and advisory outside the narrow
+high-value gates described in
+[`docs/agent-coordination-protocol.md`](docs/agent-coordination-protocol.md).
+Run it from this checkout with `bin/agent-coord status --format text`.
 
 ## Orchestrated repos
 
