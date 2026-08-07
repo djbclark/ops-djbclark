@@ -217,7 +217,7 @@ Deliberately small. In dependency order:
 
 ### v0 implementation status
 
-The first two items now exist as the standard-library
+The first three items now exist as the standard-library
 [`bin/agent-coord`](../bin/agent-coord) client:
 
 ```bash
@@ -226,6 +226,8 @@ bin/agent-coord status                 # machine-readable JSON
 bin/agent-coord claim /path/to/worktree --agent hermes --holder-id hermes-session --operation edit
 bin/agent-coord renew <claim-id> --agent hermes --holder-id hermes-session
 bin/agent-coord release <claim-id> --agent hermes --holder-id hermes-session
+bin/agent-coord run /path/to/worktree --agent hermes --holder-id hermes-session \
+  --prompt-file /path/to/prompt.txt --max-turns 10 --timeout-seconds 900
 ```
 
 `status` is read-only. Claim lifecycle events are appended under
@@ -238,10 +240,19 @@ separate CLI processes; the recorded PID and host remain diagnostic liveness
 signals, not the sole renewal credential. Status also reports a claim/branch
 mismatch when a path has been reused for a different repository or branch.
 
-The client is deliberately not yet wired into every launch path. Until the
-automatic Herdr/worktree/daemon hooks and narrow hard gates land, the
-implementation remains advisory for ordinary edits. That limitation is
-intentional and must not be described as filesystem enforcement.
+`run` reads the prompt from a file or standard input, never from the process
+argv. It launches the subscription-checked `claude-sub --stdin` wrapper with
+`stream-json`, bounded turns, a timeout, and `dontAsk` permissions. It stores
+sanitized stream metadata and a manifest under
+`~/.local/state/agent-coord/runs/<run-id>/`; prompt and response content are
+not persisted by default. Exit 75 means the Claude session is resumable (for
+example `error_max_turns`), and exit 124 means the process timed out. The
+claim is released on every terminal path.
+
+The client is wired for explicit headless worker launches. Automatic
+Herdr/worktree/daemon hooks and narrow hard gates remain staged work; until
+those land, ordinary edits outside `agent-coord run` remain advisory. That
+limitation is intentional and must not be described as filesystem enforcement.
 
 Cursor's one-sentence version, worth keeping as the memorable form:
 
