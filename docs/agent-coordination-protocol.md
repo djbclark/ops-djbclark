@@ -219,6 +219,25 @@ Cursor's one-sentence version, worth keeping as the memorable form:
 > Own by create; claim the worktree; never mutate foreign ownership; `ports.yml`
 > before bind; `SESSION_LOG` is handoff not locks.
 
+## Headless Claude is the default worker path
+
+For bounded implementation tasks, the coordinator should launch Claude Code in
+print mode from the worker's own task workspace. The worker contract is
+documented in [headless-claude-worker.md](headless-claude-worker.md).
+
+This is the default path because it gives the coordinator a machine-readable
+stream, a resumable session, and an independent verification boundary without
+requiring a terminal multiplexer. The coordinator remains responsible for
+creating the workspace, choosing the task, interpreting the result, running
+verification, and deciding whether any commit, push, merge, or release action
+is permitted.
+
+Herdr remains the interactive human-in-the-loop fallback for an ambiguous
+permission decision, protected-path escalation, or a task that genuinely needs
+a TUI. Ralph TUI remains the PRD/Beads multi-iteration controller. Neither
+Herdr nor a Claude worker may become a second coordinator or recursively spawn
+another Hermes controller.
+
 ## Positive commitments
 
 What agents said they *will* do unprompted is as load-bearing as what they
