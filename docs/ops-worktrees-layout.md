@@ -231,3 +231,14 @@ other.
 
 **If you find foreign commits:** do not revert another agent's work unilaterally.
 Surface it to the operator with options.
+
+**Making these rules queryable.** The rules above are prose an agent must
+remember, so they degrade under load — and they govern behaviour *inside* a
+workspace while saying nothing about knowing what else is live. On 2026-08-07 two
+agents followed every rule and were still one coincidence away from colliding on
+the same subsystem. See
+[agent-coordination-protocol.md](agent-coordination-protocol.md) for the
+negotiated design that makes ownership machine-checkable — including, explicitly,
+what each agent refused to commit to. That document is **design, not yet
+implemented**: until its entry points exist, these rules remain the only thing
+actually in force.
