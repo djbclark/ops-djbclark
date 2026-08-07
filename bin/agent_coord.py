@@ -31,10 +31,32 @@ DEFAULT_ARTIFACT_ROOT = Path.home() / ".local" / "state" / "agent-coord" / "runs
 GIT_TIMEOUT_SECONDS = 10
 MAX_ARTIFACT_BYTES = 1_000_000
 MAX_STDERR_BYTES = 256_000
+HARD_GATE_OPERATIONS = frozenset({"commit", "push", "merge", "tag", "release"})
+CLEAN_REQUIRED_OPERATIONS = frozenset({"push", "merge", "tag", "release"})
+PROTECTED_OPERATIONS = frozenset({"deploy_write", "secret_write"})
+SECURITY_BOUNDARY_NAMES = frozenset({".env", ".env.local", ".secrets", "secretspec", "credentials"})
 
 
 class ClaimError(RuntimeError):
     """A structured refusal to create or mutate a claim."""
+
+
+@dataclass(frozen=True)
+class GateDecision:
+    allowed: bool
+    operation: str
+    reason: str
+    claim_id: str | None
+    details: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "allowed": self.allowed,
+            "operation": self.operation,
+            "reason": self.reason,
+            "claim_id": self.claim_id,
+            "details": self.details,
+        }
 
 
 @dataclass(frozen=True)
@@ -635,6 +657,64 @@ def run_worker(
     return WorkerRun(run_id, artifact_dir, claim.claim_id, return_code, timed_out, subtype, session_id)
 
 
+def _gate_refusal(operation: str, reason: str, claim_id: str | None, **details: Any) -> GateDecision:
+    return GateDecision(False, operation, reason, claim_id, details)
+
+
+def evaluate_gate(
+    worktree: Worktree,
+    claims: dict[str, ClaimEvent],
+    operation: str,
+    *,
+    claim_id: str | None,
+    target_paths: Iterable[str] = (),
+    now: str | None = None,
+) -> GateDecision:
+    """Evaluate a dangerous operation without performing it.
+
+    This is intentionally a policy boundary, not a launch hook. Callers must
+    still execute the operation themselves after an allowed decision.
+    """
+    if operation not in HARD_GATE_OPERATIONS | PROTECTED_OPERATIONS:
+        return GateDecision(True, operation, "advisory_not_hard_gated", claim_id, {})
+    if operation in PROTECTED_OPERATIONS:
+        return _gate_refusal(operation, "human_approval_required", claim_id)
+    if worktree.bare:
+        return _gate_refusal(operation, "bare_worktree", claim_id)
+
+    claim = claims.get(claim_id) if claim_id else None
+    if claim is None:
+        return _gate_refusal(operation, "missing_claim", claim_id)
+    if claim.workspace != worktree.path or claim.repo != worktree.repo or claim.branch != worktree.branch:
+        return _gate_refusal(
+            operation,
+            "claim_mismatch",
+            claim_id,
+            claim_workspace=claim.workspace,
+            claim_repo=claim.repo,
+            claim_branch=claim.branch,
+        )
+    if claim.expires_at is not None and _parse_time(claim.expires_at) <= _parse_time(now or _now().isoformat()):
+        return _gate_refusal(operation, "expired_claim", claim_id, expires_at=claim.expires_at)
+    if operation in CLEAN_REQUIRED_OPERATIONS and worktree.dirty:
+        return _gate_refusal(operation, "dirty_worktree", claim_id, status_lines=list(worktree.status_lines))
+
+    workspace = Path(worktree.path).resolve()
+    for raw_target in target_paths:
+        target = Path(raw_target)
+        if not target.is_absolute():
+            target = workspace / target
+        target = target.resolve()
+        if Path.home() / "ops" in target.parents or target == Path.home() / "ops":
+            return _gate_refusal(operation, "deploy_checkout_protected", claim_id, target=str(target))
+        if any(part in SECURITY_BOUNDARY_NAMES or part.startswith(".env.") for part in target.parts):
+            return _gate_refusal(operation, "security_boundary_protected", claim_id, target=str(target))
+        if target == workspace or workspace in target.parents:
+            continue
+        return _gate_refusal(operation, "path_escape", claim_id, target=str(target), workspace=str(workspace))
+    return GateDecision(True, operation, "claim_and_workspace_verified", claim_id, {"workspace": str(workspace)})
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-coord")
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
@@ -642,6 +722,12 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     status = sub.add_parser("status")
     status.add_argument("--format", choices=("json", "text"), default="json")
+    gate = sub.add_parser("gate")
+    gate.add_argument("workspace", type=Path)
+    gate.add_argument("--operation", required=True)
+    gate.add_argument("--claim-id")
+    gate.add_argument("--target", action="append", default=[])
+    gate.add_argument("--now")
     run = sub.add_parser("run")
     run.add_argument("workspace", type=Path)
     run.add_argument("--prompt-file", type=Path)
@@ -693,6 +779,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 report["event_log_errors"] = errors
             _print_status(report, args.format)
             return 0 if not errors else 2
+        if args.command == "gate":
+            worktrees = discover_worktrees(args.root)
+            target = args.workspace.resolve()
+            worktree = next((item for item in worktrees if Path(item.path).resolve() == target), None)
+            if worktree is None:
+                raise ClaimError(f"workspace is not a registered worktree: {target}")
+            events, errors = load_events(args.state)
+            if errors:
+                raise ClaimError("cannot evaluate malformed event log: " + "; ".join(errors))
+            decision = evaluate_gate(
+                worktree,
+                fold_claim_events(events),
+                args.operation,
+                claim_id=args.claim_id,
+                target_paths=args.target,
+                now=args.now,
+            )
+            print(json.dumps(decision.to_dict(), indent=2, sort_keys=True))
+            return 0 if decision.allowed else 75
         if args.command == "claim":
             claim = claim_workspace(
                 args.workspace,

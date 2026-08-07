@@ -8,8 +8,10 @@ from pathlib import Path
 from bin.agent_coord import (
     ClaimError,
     ClaimEvent,
+    GateDecision,
     Worktree,
     build_status,
+    evaluate_gate,
     fold_claim_events,
     holder_alive,
     load_events,
@@ -206,6 +208,82 @@ class StatusTests(unittest.TestCase):
         self.assertTrue(report["worktrees"][0]["dirty"])
         self.assertTrue(report["claims"][0]["stale"])
         self.assertFalse(report["worktrees"][0]["claim_mismatch"])
+
+
+class HardGateTests(unittest.TestCase):
+    def setUp(self):
+        self.worktree = Worktree(
+            path="/work/task/site",
+            repo="site",
+            head="abc",
+            branch="feature/task",
+            bare=False,
+            dirty=False,
+            status_lines=(),
+        )
+        self.claim = ClaimEvent(
+            event="claim",
+            claim_id="c1",
+            workspace=self.worktree.path,
+            repo=self.worktree.repo,
+            branch="feature/task",
+            holder={"agent": "hermes", "id": "session", "pid": 1, "host": socket.gethostname()},
+            operation="edit",
+            created_at="2026-08-07T10:00:00Z",
+            expires_at="2099-01-01T00:00:00Z",
+        )
+
+    def test_commit_requires_matching_active_claim(self):
+        decision = evaluate_gate(self.worktree, {"c1": self.claim}, "commit", claim_id="c1")
+        self.assertIsInstance(decision, GateDecision)
+        self.assertTrue(decision.allowed)
+
+    def test_push_requires_clean_worktree(self):
+        dirty = Worktree(
+            path=self.worktree.path,
+            repo=self.worktree.repo,
+            head=self.worktree.head,
+            branch=self.worktree.branch,
+            bare=False,
+            dirty=True,
+            status_lines=(" M file",),
+        )
+        decision = evaluate_gate(dirty, {"c1": self.claim}, "push", claim_id="c1")
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "dirty_worktree")
+
+    def test_missing_claim_is_structured_refusal(self):
+        decision = evaluate_gate(self.worktree, {}, "merge", claim_id=None)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "missing_claim")
+
+    def test_target_escape_is_refused(self):
+        decision = evaluate_gate(
+            self.worktree,
+            {"c1": self.claim},
+            "commit",
+            claim_id="c1",
+            target_paths=("/work/other/site/file",),
+        )
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "path_escape")
+
+    def test_deploy_and_secret_writes_require_human_approval(self):
+        for operation in ("deploy_write", "secret_write"):
+            decision = evaluate_gate(self.worktree, {"c1": self.claim}, operation, claim_id="c1")
+            self.assertFalse(decision.allowed)
+            self.assertEqual(decision.reason, "human_approval_required")
+
+    def test_security_boundary_path_is_refused_inside_claimed_workspace(self):
+        decision = evaluate_gate(
+            self.worktree,
+            {"c1": self.claim},
+            "commit",
+            claim_id="c1",
+            target_paths=(".env.local",),
+        )
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "security_boundary_protected")
 
 
 class WorkerRunTests(unittest.TestCase):
