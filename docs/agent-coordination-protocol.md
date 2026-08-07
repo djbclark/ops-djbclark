@@ -75,15 +75,31 @@ the coarse system is demonstrably used.
 This is a real concession: it will not catch two agents editing different
 files in the *same* worktree. It will catch every failure we have actually had.
 
-### 2. Reuse `ops_release_lock.py`, do not invent
+### 2. Reuse `ops_release_lock.py`'s claim *shape* — but not its storage
 
 `site-djbclark`'s `bin/ops_release_lock.py` already proves this machine can
-run a flock-protected claim with holder identity, TTL, `EX_TEMPFAIL` (75) contention
-behaviour, and stale-claim supersession. Codex and Hermes independently named it
-as the implementation seed.
+run a flock-protected claim with holder identity, TTL, `EX_TEMPFAIL` (75)
+contention behaviour, and stale-claim supersession. Codex and Hermes
+independently named it as the implementation seed.
 
-Reuse its lock, atomic-write, status and error-shaping behaviour. Generalize the
-**resource model**; leave its release-specific policy behind.
+**`orc` then split that recommendation, and is right.** Reuse the claim *object
+shape* (holder / pid / host / operation / TTL) and the error-shaping. Do **not**
+reuse the storage model:
+
+> A single mutable `claims.json` + flock is right for `ops_release_lock.py`
+> because that guards ONE serialized operation (a version cut) with low write
+> frequency. A machine-wide registry across ~31 worktrees and many agents will
+> have frequent, small, concurrent writes — exactly the shape where flock
+> contention and partial-write corruption bite.
+
+And the fix is already validated *on this machine*: `site-private/memory` uses
+one-fact-per-file with an append-only `MEMORY.md` precisely because multiple
+agents write concurrently and must not overwrite each other. That convention **is**
+the concurrency design.
+
+So: **append-only JSONL event log** (claim / release events), readers fold it to
+current state. This resolves the substrate question that was open in the first
+draft — see [Open questions](#open-questions).
 
 ### 3. Registry is intent; herdr is liveness; they are not the same
 
@@ -138,6 +154,19 @@ hard gates — but only at chokepoints that are few and consequential:
 Not around every raw file edit. Every respondent refused that, and a gate agents
 route around is worse than no gate.
 
+`orc` sharpened this: advisory-with-audit *alone* is too weak given the stated
+goal of avoiding false confidence, but hard-failing every unclaimed write is a
+protocol nobody follows past the first time it blocks something legitimate
+mid-task. Narrow the teeth to what this machine already treats as
+serialized-and-dangerous:
+
+- release cutting / tagging
+- **secrets and security-boundary files** — literally the collision `orc` and
+  Claude Code just resolved by hand
+- writes to the `~/ops` deploy checkouts
+
+Hard block there; advisory log everywhere else.
+
 ### 8. Ship the dirty-worktree audit first
 
 The cheapest, highest-value piece, and independently proposed by Codex and
@@ -160,6 +189,10 @@ false confidence — the specific failure every respondent warned about.
 | Inferring ownership solely from process lists | Hermes |
 | Deleting old worktrees because claims are stale | Hermes |
 | Replacing `registry/ports.yml` | Hermes |
+| Declaring claims for routine in-worktree edits | orc |
+| Checking the registry before *reads* (grep/cat/ls) | orc |
+| Perfect TTL hygiene on its own claims | orc |
+| Being the sole enforcement mechanism without herdr cross-check | orc |
 | Claiming enforcement exists where it does not | Codex, Hermes |
 
 Hermes' summary is the honest framing: the protocol is **not** effective until the
@@ -186,12 +219,26 @@ Cursor's one-sentence version, worth keeping as the memorable form:
 > Own by create; claim the worktree; never mutate foreign ownership; `ports.yml`
 > before bind; `SESSION_LOG` is handoff not locks.
 
+## Positive commitments
+
+What agents said they *will* do unprompted is as load-bearing as what they
+refused, and is narrower than the straw-man assumed. `orc`'s is the most concrete
+and is a good template for the others:
+
+- check-before-write on **anything outside a task workspace it created itself**
+- check-before-write on the **narrow dangerous-operation list** in section 7
+- explicitly *not* on routine in-worktree edits, reads, or exploration
+
+The honest limit `orc` named is behavioural, not mechanical: flock and JSON are
+trivial for every runtime here; reliably remembering to call them under load is
+not. That is the whole reason section 7 keeps the mandatory surface small and
+section 3 requires the herdr cross-check — any agent can be killed mid-edit.
+
 ## Open questions
 
-- **Central mutable file vs append-only event log.** Raised in the negotiation,
-  not resolved. Append-only is more robust to concurrent writers and crashes;
-  `ops_release_lock.py` is mutable-with-flock and proven here. Decide before
-  implementing (2) — it is expensive to change afterwards.
+- ~~Central mutable file vs append-only event log.~~ **Resolved** by `orc`:
+  append-only JSONL, keeping `ops_release_lock.py`'s claim object shape but not
+  its storage. See [section 2](#2-reuse-ops_release_lockpys-claim-shape--but-not-its-storage).
 - **Non-herdr agents.** Ralph controllers, cron jobs and daemons have no pane.
   They need an identity story that does not route through herdr, or they are
   permanently invisible to the liveness half.
