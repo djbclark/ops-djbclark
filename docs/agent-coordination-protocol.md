@@ -217,7 +217,8 @@ Deliberately small. In dependency order:
 
 ### v0 implementation status
 
-The first three items now exist as the standard-library
+The status command, explicit claim lifecycle, explicit headless worker runner,
+and design-first hard-gate evaluator now exist as the standard-library
 [`bin/agent-coord`](../bin/agent-coord) client:
 
 ```bash
@@ -248,6 +249,38 @@ sanitized stream metadata and a manifest under
 not persisted by default. Exit 75 means the Claude session is resumable (for
 example `error_max_turns`), and exit 124 means the process timed out. The
 claim is released on every terminal path.
+
+### Hard-gate policy evaluator (design-first phase)
+
+The read-only `gate` command evaluates, but does not perform, a dangerous
+operation:
+
+```bash
+bin/agent-coord gate /path/to/worktree --operation commit --claim-id CLAIM
+bin/agent-coord gate /path/to/worktree --operation release --claim-id CLAIM \
+  --target path/to/tag-or-release-file
+```
+
+The current policy is deliberately narrow:
+
+| Operation | Required conditions |
+|---|---|
+| `commit` | matching, active claim; every target stays inside the claimed workspace |
+| `push`, `merge`, `tag`, `release` | matching, active claim and clean worktree |
+| `deploy_write`, `secret_write` | always refuse with `human_approval_required` |
+
+Every refusal is JSON with a stable reason and exit status 75. Refusal reasons
+include `missing_claim`, `claim_mismatch`, `expired_claim`, `dirty_worktree`,
+`path_escape`, `deploy_checkout_protected`, and
+`security_boundary_protected`. `~/ops` and security-boundary names such as
+`.env*`, `secretspec`, and `credentials` are protected even when they are
+inside an otherwise claimed workspace. Non-listed operations return an
+`advisory_not_hard_gated` decision and are not blocked.
+
+This evaluator is intentionally not called by Herdr, Ralph, daemon launchers,
+Git hooks, or the existing `run` path yet. It establishes and tests the policy
+before adding enforcement to any launch path; no operation is executed by the
+evaluator itself.
 
 The client is wired for explicit headless worker launches. Automatic
 Herdr/worktree/daemon hooks and narrow hard gates remain staged work; until
