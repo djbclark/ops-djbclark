@@ -596,7 +596,7 @@ def run_worker(
         session_id = str(result_event.get("session_id")) if result_event and result_event.get("session_id") else None
         if timed_out:
             return_code = 124
-        elif subtype == "error_max_turns" and return_code == 0:
+        elif subtype == "error_max_turns":
             return_code = 75
         release_error: str | None = None
         try:
