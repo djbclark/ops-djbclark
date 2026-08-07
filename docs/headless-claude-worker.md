@@ -1,8 +1,7 @@
 # Headless Claude Code worker contract (design)
 
-**Status:** design, not yet implemented — no `bin/` script, wrapper, or test
-exists for this in the repo. This document describes the contract a future
-implementation must satisfy; it does not itself run anything.
+**Status:** v0 explicit runner implemented as `bin/agent-coord run`; automatic
+Herdr/worktree hooks and proof-pack generation remain staged work.
 
 **Scope:** how a supervising process (orchestrator, Ralph controller, cron
 job, or another agent) should launch and manage a **headless** `claude`
@@ -34,11 +33,12 @@ One worker process per workspace. If a supervisor wants N concurrent
 headless workers, it creates N task workspaces, not N processes sharing one
 checkout.
 
-## 2. Invocation: argv subprocess, subscription-authenticated
+## 2. Invocation: argv subprocess with stdin prompt, subscription-authenticated
 
-Launch `claude` as a subprocess with an explicit argv array (e.g. Python
-`subprocess.run([...])`, Node `child_process.spawn([...])`), never by
-interpolating a prompt or path into a shell string. Prompts and file paths
+Launch `claude` as a subprocess with an explicit argv array and send the
+prompt through stdin (e.g. Python `subprocess.Popen([...])`, Node
+`child_process.spawn([...])`), never by interpolating a prompt or path into a
+shell string. Prompts and file paths
 are attacker- and model-controlled text; shell interpolation of either is a
 command-injection hazard independent of anything Claude-specific.
 
@@ -66,11 +66,11 @@ claude -p "<task prompt>" \
 ```
 
 On this machine, use the subscription-preserving `claude-sub` launcher rather
-than calling a bare/API-key configuration. `claude-sub` supplies `-p` itself,
-so its prompt is the first positional argument:
+than calling a bare/API-key configuration. Its `--stdin` mode supplies `-p`
+without putting the prompt in process arguments:
 
 ```bash
-claude-sub "<task prompt>" \
+claude-sub --stdin \
   --model sonnet \
   --max-turns 10 \
   --permission-mode dontAsk \
@@ -111,10 +111,11 @@ supervisor must not collapse these into a single pass/fail bit:
 - **Success** results should still go through independent verification
   (§7) before anything downstream trusts them.
 
-Log the raw result event verbatim into the run's artifacts (§6) regardless
-of which case it is — the supervisor's classification logic will need
-correcting over time, and the raw event is the only way to tell whether a
-misclassification was the CLI's shape changing or the supervisor's bug.
+The v0 runner records only sanitized event metadata by default. Response
+content capture is intentionally opt-in and bounded; the prompt is never
+persisted. This is stronger than the general contract's raw-event suggestion
+because prompts and model responses may contain credentials or other private
+data.
 
 ## 5. Session resume for continuation, not re-prompting from scratch
 
@@ -137,8 +138,8 @@ it.
 
 ## 6. Bounded artifacts per run
 
-Each worker invocation writes a fixed, bounded set of artifacts into its
-task workspace (or a run-specific subdirectory of it) — not an unbounded
+Each worker invocation writes a fixed, bounded set of artifacts under
+`~/.local/state/agent-coord/runs/<run-id>/` — not an unbounded
 or ad hoc log dump. Raw event and error logs are truncated or rotated at a
 configured byte limit; the limit is part of the run configuration and a
 truncation marker is recorded in `run.json`:
@@ -147,16 +148,17 @@ truncation marker is recorded in `run.json`:
   timestamps, session id, permission mode, the terminal result subtype, and
   exit code. This is the thing a supervisor or human reads first to decide
   what happened.
-- **stdout/stderr** — the raw stream-json NDJSON and stderr, captured up to
-  the configured cap so a runaway or looping worker cannot fill the disk.
+- **stdout/stderr** — sanitized stream metadata and bounded stderr, captured
+  so a runaway or looping worker cannot fill the disk. Prompt and response
+  content are omitted by default.
 - **proof pack** — the evidence a human or the deterministic verification
   step (§7) needs to check the worker's claim: the diff it produced
   (`git diff`), and the output of whatever build/test/lint commands were run
   against its changes. This is what makes "the worker said it passed tests"
   checkable after the fact instead of taken on faith.
 
-These artifacts live under the worker's own task workspace, not in a shared
-location another worker could also be writing to — consistent with
+The run directory is unique and owned by the invoking user; the claimed
+worktree remains the worker's own task workspace. This is consistent with
 [Cross-Agent Rule 5](ops-worktrees-layout.md#cross-agent-rules) (one
 owner/integrator per workspace).
 

@@ -12,9 +12,12 @@ import datetime as datetime_module
 import fcntl
 import json
 import os
+import selectors
+import signal
 import socket
 import subprocess
 import sys
+import time
 import uuid
 from collections.abc import Iterable, Sequence
 from contextlib import contextmanager
@@ -24,7 +27,10 @@ from typing import Any
 
 DEFAULT_ROOT = Path.home() / "src" / "ops-worktrees"
 DEFAULT_STATE = Path.home() / ".local" / "state" / "agent-coord" / "events.jsonl"
+DEFAULT_ARTIFACT_ROOT = Path.home() / ".local" / "state" / "agent-coord" / "runs"
 GIT_TIMEOUT_SECONDS = 10
+MAX_ARTIFACT_BYTES = 1_000_000
+MAX_STDERR_BYTES = 256_000
 
 
 class ClaimError(RuntimeError):
@@ -407,6 +413,228 @@ def mutate_claim(
         return event
 
 
+@dataclass(frozen=True)
+class WorkerRun:
+    run_id: str
+    artifact_dir: Path
+    claim_id: str
+    exit_code: int
+    timed_out: bool
+    result_subtype: str | None
+    session_id: str | None
+
+
+_SENSITIVE_EVENT_KEYS = frozenset(
+    {"content", "input", "message", "prompt", "result", "structured_output", "text"}
+)
+
+
+def _sanitize_event(value: Any, key: str | None = None) -> Any:
+    if key is not None and key.lower() in _SENSITIVE_EVENT_KEYS:
+        return "[content redacted]"
+    if isinstance(value, dict):
+        return {name: _sanitize_event(item, name) for name, item in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_event(item) for item in value]
+    return value
+
+
+def _write_bounded(path: Path, data: bytes, limit: int, prompt: str) -> bool:
+    safe = data.replace(prompt.encode("utf-8", "replace"), b"[prompt redacted]")
+    path.write_bytes(safe[:limit])
+    return len(safe) > limit
+
+
+def run_worker(
+    workspace: Path,
+    *,
+    root: Path,
+    state: Path,
+    artifact_root: Path = DEFAULT_ARTIFACT_ROOT,
+    prompt: str,
+    agent: str,
+    holder_id: str,
+    operation: str,
+    command: Sequence[str] | None = None,
+    timeout_seconds: float = 900,
+    max_turns: int = 10,
+    model: str = "sonnet",
+    resume: str | None = None,
+    allowed_tools: Sequence[str] = (),
+) -> WorkerRun:
+    """Claim a workspace, supervise one headless Claude process, then release it."""
+    if not prompt:
+        raise ClaimError("prompt must not be empty")
+    if timeout_seconds <= 0:
+        raise ClaimError("timeout-seconds must be positive")
+    if max_turns <= 0:
+        raise ClaimError("max-turns must be positive")
+
+    workspace = workspace.resolve()
+    worktrees = discover_worktrees(root)
+    target = next((item for item in worktrees if Path(item.path).resolve() == workspace), None)
+    if target is None:
+        raise ClaimError(f"workspace is not a registered worktree: {workspace}")
+    claim = claim_workspace(
+        workspace,
+        root=root,
+        state=state,
+        agent=agent,
+        holder_id=holder_id,
+        operation=operation,
+        ttl_seconds=max(60, int(timeout_seconds) + 300),
+    )
+
+    run_id = uuid.uuid4().hex
+    artifact_dir = artifact_root / run_id
+    artifact_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+    stdout_path = artifact_dir / "stdout.ndjson"
+    stderr_path = artifact_dir / "stderr.txt"
+    binary = list(command or (os.environ.get("AGENT_COORD_CLAUDE_BIN", "claude-sub"), "--stdin"))
+    argv = binary + ["--model", model, "--max-turns", str(max_turns), "--permission-mode", "dontAsk"]
+    argv += ["--output-format", "stream-json", "--verbose", "--include-partial-messages"]
+    for tool in allowed_tools:
+        argv += ["--allowedTools", tool]
+    if resume:
+        argv += ["--resume", resume]
+
+    started_at = _now().isoformat().replace("+00:00", "Z")
+    result_event: dict[str, Any] | None = None
+    stream_errors: list[str] = []
+    stderr_data = bytearray()
+    stdout_buffer = b""
+    stdout_written = 0
+    stdout_truncated = False
+    timed_out = False
+    return_code = 1
+    process = None
+    selector = None
+    try:
+        process = subprocess.Popen(
+            argv,
+            cwd=workspace,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            assert process.stdin is not None
+            process.stdin.write(prompt.encode("utf-8"))
+            process.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+        assert process.stdout is not None and process.stderr is not None
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+        deadline = time.monotonic() + timeout_seconds
+        with stdout_path.open("w", encoding="utf-8") as stdout_file:
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 and process.poll() is None:
+                    timed_out = True
+                    os.killpg(process.pid, signal.SIGTERM)
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.wait()
+                    break
+                for key, _ in selector.select(max(0.05, min(remaining, 0.5))):
+                    fd = key.fileobj if isinstance(key.fileobj, int) else key.fileobj.fileno()
+                    chunk = os.read(fd, 65536)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    if key.data == "stderr":
+                        remaining_stderr = MAX_STDERR_BYTES + 1 - len(stderr_data)
+                        if remaining_stderr > 0:
+                            stderr_data.extend(chunk[:remaining_stderr])
+                        continue
+                    stdout_buffer += chunk
+                    while b"\n" in stdout_buffer:
+                        raw_line, stdout_buffer = stdout_buffer.split(b"\n", 1)
+                        try:
+                            event = json.loads(raw_line)
+                        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                            stream_errors.append(str(exc))
+                            continue
+                        if not isinstance(event, dict):
+                            stream_errors.append("stream event is not an object")
+                            continue
+                        if event.get("type") == "result":
+                            result_event = {
+                                key: event[key]
+                                for key in ("subtype", "session_id", "is_error", "duration_ms", "num_turns", "usage")
+                                if key in event
+                            }
+                        safe_line = json.dumps(_sanitize_event(event), sort_keys=True) + "\n"
+                        if stdout_written < MAX_ARTIFACT_BYTES and stdout_written + len(safe_line) <= MAX_ARTIFACT_BYTES:
+                            stdout_file.write(safe_line)
+                            stdout_written += len(safe_line)
+                            stdout_file.flush()
+                        else:
+                            stdout_truncated = True
+            if stdout_buffer.strip():
+                stream_errors.append("stream ended with an incomplete JSON line")
+            selector.close()
+            selector = None
+        return_code = process.returncode if process.returncode is not None else process.wait()
+    except OSError as exc:
+        stream_errors.append(str(exc))
+        return_code = 127
+    finally:
+        if selector is not None:
+            selector.close()
+        if process is not None:
+            for pipe in (process.stdin, process.stdout, process.stderr):
+                if pipe is not None:
+                    pipe.close()
+        stderr_truncated = _write_bounded(stderr_path, bytes(stderr_data), MAX_STDERR_BYTES, prompt)
+        subtype = str(result_event.get("subtype")) if result_event and result_event.get("subtype") else None
+        session_id = str(result_event.get("session_id")) if result_event and result_event.get("session_id") else None
+        if timed_out:
+            return_code = 124
+        elif subtype == "error_max_turns" and return_code == 0:
+            return_code = 75
+        release_error: str | None = None
+        try:
+            mutate_claim(
+                claim.claim_id,
+                root=root,
+                state=state,
+                agent=agent,
+                holder_id=holder_id,
+                event_type="release",
+            )
+        except ClaimError as exc:
+            release_error = str(exc)
+            return_code = 75
+        manifest = {
+            "run_id": run_id,
+            "claim_id": claim.claim_id,
+            "workspace": str(workspace),
+            "operation": operation,
+            "argv": argv,
+            "prompt_persisted": False,
+            "started_at": started_at,
+            "finished_at": _now().isoformat().replace("+00:00", "Z"),
+            "exit_code": return_code,
+            "timed_out": timed_out,
+            "result_subtype": subtype,
+            "session_id": session_id,
+            "stream_errors": stream_errors,
+            "stdout_truncated": stdout_truncated,
+            "stderr_truncated": stderr_truncated,
+            "claim_released": release_error is None,
+        }
+        if release_error:
+            manifest["release_error"] = release_error
+        (artifact_dir / "run.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return WorkerRun(run_id, artifact_dir, claim.claim_id, return_code, timed_out, subtype, session_id)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-coord")
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
@@ -414,6 +642,18 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     status = sub.add_parser("status")
     status.add_argument("--format", choices=("json", "text"), default="json")
+    run = sub.add_parser("run")
+    run.add_argument("workspace", type=Path)
+    run.add_argument("--prompt-file", type=Path)
+    run.add_argument("--artifact-root", type=Path, default=DEFAULT_ARTIFACT_ROOT)
+    run.add_argument("--agent", default=os.environ.get("AGENT_COORD_AGENT", "hermes"))
+    run.add_argument("--holder-id", default=os.environ.get("AGENT_COORD_HOLDER_ID"))
+    run.add_argument("--operation", default="edit")
+    run.add_argument("--timeout-seconds", type=float, default=900)
+    run.add_argument("--max-turns", type=int, default=10)
+    run.add_argument("--model", default="sonnet")
+    run.add_argument("--resume")
+    run.add_argument("--allowed-tool", action="append", default=[])
     claim = sub.add_parser("claim")
     claim.add_argument("workspace", type=Path)
     claim.add_argument("--agent", default=os.environ.get("AGENT_COORD_AGENT", "unknown"))
@@ -463,6 +703,39 @@ def main(argv: Sequence[str] | None = None) -> int:
                 operation=args.operation,
                 ttl_seconds=args.ttl_seconds,
             )
+        elif args.command == "run":
+            prompt = args.prompt_file.read_text(encoding="utf-8") if args.prompt_file else sys.stdin.read()
+            result = run_worker(
+                args.workspace,
+                root=args.root,
+                state=args.state,
+                artifact_root=args.artifact_root,
+                prompt=prompt,
+                agent=args.agent,
+                holder_id=args.holder_id or args.agent,
+                operation=args.operation,
+                timeout_seconds=args.timeout_seconds,
+                max_turns=args.max_turns,
+                model=args.model,
+                resume=args.resume,
+                allowed_tools=args.allowed_tool,
+            )
+            print(
+                json.dumps(
+                    {
+                        "run_id": result.run_id,
+                        "artifact_dir": str(result.artifact_dir),
+                        "claim_id": result.claim_id,
+                        "exit_code": result.exit_code,
+                        "timed_out": result.timed_out,
+                        "result_subtype": result.result_subtype,
+                        "session_id": result.session_id,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return result.exit_code
         else:
             claim = mutate_claim(
                 args.claim_id,

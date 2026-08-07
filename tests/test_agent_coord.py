@@ -1,4 +1,6 @@
+import json
 import socket
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +14,7 @@ from bin.agent_coord import (
     holder_alive,
     load_events,
     parse_worktree_porcelain,
+    run_worker,
     validate_claim_target,
 )
 
@@ -203,6 +206,82 @@ class StatusTests(unittest.TestCase):
         self.assertTrue(report["worktrees"][0]["dirty"])
         self.assertTrue(report["claims"][0]["stale"])
         self.assertFalse(report["worktrees"][0]["claim_mismatch"])
+
+
+class WorkerRunTests(unittest.TestCase):
+    def test_prompt_is_stdin_only_and_artifacts_are_sanitized(self):
+        fake = (
+            "import json, sys; "
+            "prompt=sys.stdin.read(); "
+            "print(json.dumps({'type':'system','subtype':'init','session_id':'s1'})); "
+            "print(json.dumps({'type':'result','subtype':'success','session_id':'s1','result':prompt}))"
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path.cwd().parents[1]
+            state = Path(temp) / "events.jsonl"
+            result = run_worker(
+                Path.cwd(),
+                root=root,
+                state=state,
+                artifact_root=Path(temp) / "runs",
+                prompt="secret prompt that must not persist",
+                agent="test-worker",
+                holder_id="worker-session",
+                operation="verify",
+                command=[sys.executable, "-c", fake],
+                timeout_seconds=10,
+                max_turns=2,
+            )
+            self.assertEqual(result.exit_code, 0)
+            manifest = json.loads((result.artifact_dir / "run.json").read_text())
+            self.assertFalse(manifest["prompt_persisted"])
+            self.assertNotIn("secret prompt", json.dumps(manifest))
+            self.assertNotIn("secret prompt", (result.artifact_dir / "stdout.ndjson").read_text())
+            events, errors = load_events(state)
+            self.assertFalse(errors)
+            self.assertEqual([event.event for event in events], ["claim", "release"])
+
+    def test_timeout_releases_claim_and_returns_typed_timeout(self):
+        fake = "import time; time.sleep(2)"
+        with tempfile.TemporaryDirectory() as temp:
+            result = run_worker(
+                Path.cwd(),
+                root=Path.cwd().parents[1],
+                state=Path(temp) / "events.jsonl",
+                artifact_root=Path(temp) / "runs",
+                prompt="timeout prompt",
+                agent="test-worker",
+                holder_id="worker-session",
+                operation="verify",
+                command=[sys.executable, "-c", fake],
+                timeout_seconds=0.1,
+                max_turns=2,
+            )
+            self.assertEqual(result.exit_code, 124)
+            self.assertTrue(result.timed_out)
+
+    def test_max_turns_is_resumable_exit_75(self):
+        fake = (
+            "import json; "
+            "print(json.dumps({'type':'result','subtype':'error_max_turns','session_id':'resume-me'}))"
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            result = run_worker(
+                Path.cwd(),
+                root=Path.cwd().parents[1],
+                state=Path(temp) / "events.jsonl",
+                artifact_root=Path(temp) / "runs",
+                prompt="continue later",
+                agent="test-worker",
+                holder_id="worker-session",
+                operation="verify",
+                command=[sys.executable, "-c", fake],
+                timeout_seconds=10,
+                max_turns=1,
+            )
+            self.assertEqual(result.exit_code, 75)
+            self.assertEqual(result.result_subtype, "error_max_turns")
+            self.assertEqual(result.session_id, "resume-me")
 
 
 if __name__ == "__main__":
