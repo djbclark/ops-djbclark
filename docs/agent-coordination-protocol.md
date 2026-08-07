@@ -282,6 +282,32 @@ Git hooks, or the existing `run` path yet. It establishes and tests the policy
 before adding enforcement to any launch path; no operation is executed by the
 evaluator itself.
 
+### Opt-in Herdr guard
+
+The first launch integration is intentionally explicit and bounded:
+
+```bash
+bin/agent-coord-herdr \
+  --agent hermes-claude-task \
+  --holder-id hermes-claude-task-session \
+  --operation edit \
+  /path/to/worktree -- \
+  herdr agent prompt AGENT_NAME 'bounded task text' --wait
+```
+
+The wrapper claims the worktree before starting the argv-based child command,
+renews the claim while the command runs, and releases it on normal, nonzero,
+interrupt, and renewal-failure exits. The child receives inherited terminal
+stdio; its exit status is preserved unless claim renewal or release fails,
+which returns exit status 75.
+
+Do not use this wrapper around `herdr agent start` alone: that command returns
+when the TUI becomes ready, not when the interactive agent finishes, and would
+release the claim too early. Start an interactive agent separately, then wrap
+a bounded `herdr agent prompt ... --wait` operation. Ordinary `herdr` commands
+remain unchanged, and this wrapper does not create, close, focus, or clean up
+Herdr workspaces.
+
 The client is wired for explicit headless worker launches. Automatic
 Herdr/worktree/daemon hooks and narrow hard gates remain staged work; until
 those land, ordinary edits outside `agent-coord run` remain advisory. That
