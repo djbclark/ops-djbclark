@@ -181,8 +181,8 @@ Herdr did, just with a shared backlog instead of ad hoc human relay.
 
 Grounding (checked 2026-08-01):
 
-- `~/src/Shizuku` is `djbclark/Shizuku`, an actively-maintained fork chain
-  (`RikkaApps/Shizuku` → `thedjchi/Shizuku` → `djbclark/Shizuku`), not a
+- `~/src/Shizuku` is `frdminc/Shizuku`, an actively-maintained fork chain
+  (`RikkaApps/Shizuku` → `thedjchi/Shizuku` → `frdminc/Shizuku`), not a
   passive vendored dependency. Real commits with real content: boot-retry
   hardening, TCP-mode reconnect, Fire-OS-specific native-lib fixes,
   headless-start support for the stayturgid device fleet — this is code
@@ -192,7 +192,7 @@ Grounding (checked 2026-08-01):
   distinct from the ops suite: tags like
   `v13.7.0-thedjchi+stayturgid-release25`, its own signing key
   (`shizuku-djbclark-release.jks`, gitignored per repo convention), its own
-  GH Releases (`gh release list -R djbclark/Shizuku` — 25+ releases, most
+  GH Releases (`gh release list -R frdminc/Shizuku` — 25+ releases, most
   recent 2026-07-31).
 - It is **not currently** part of the `~/src/ops-worktrees` bare-store
   layout — no `Shizuku.git` in `.store/`. (One stray plain checkout exists
@@ -297,7 +297,7 @@ its own one `--parent <epicId>`).
 orphaned-checkout anomaly found in `~/src/Shizuku` during this migration
 (also filed as
 [ops-djbclark#1](https://github.com/djbclark/ops-djbclark/issues/1) since
-`djbclark/Shizuku` has GitHub issues disabled). Not investigated further or
+`frdminc/Shizuku` has GitHub issues disabled). Not investigated further or
 fixed — tracked only, per explicit instruction.
 
 **First live run, 2026-08-01 — caught a real bug, not a clean pass.** The
