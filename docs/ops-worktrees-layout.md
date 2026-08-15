@@ -52,7 +52,7 @@ ops-worktrees/
 | stayturgid | `djbclark/stayturgid` | Main ops tooling project |
 | site-private | `djbclark/site-private` | Private site configuration |
 | site-djbclark | `djbclark/site-djbclark` | Public site / ansible playbooks |
-| Shizuku | `djbclark/Shizuku` | Fork (RikkaApps → thedjchi → djbclark) — Android permission broker stayturgid depends on. Own independent release cadence (`v13.7.0-thedjchi+stayturgid-releaseNN` tags) — NOT part of the ops-vX.Y.Z coordinated release suite. |
+| Shizuku | `frdminc/Shizuku` | Fork (RikkaApps → thedjchi → frdminc) — Android permission broker stayturgid depends on. Own independent release cadence (`v13.7.0-thedjchi+stayturgid-releaseNN` tags) — NOT part of the ops-vX.Y.Z coordinated release suite. |
 | ops-djbclark | `djbclark/ops-djbclark` | Control-plane repo: shared Beads task DB + Ralph TUI config routing tasks across the other four. No app code, no release process of its own. |
 
 Added 2026-08-01 as part of the Ralph TUI + Beads orchestration migration
@@ -64,12 +64,12 @@ to that release contract.
 ### Shizuku remote naming (fixed 2026-08-02)
 
 `Shizuku` is a two-hop fork chain (`RikkaApps/Shizuku` → `thedjchi/Shizuku` →
-`djbclark/Shizuku`), so `.store/Shizuku.git` carries three remotes instead of
+`frdminc/Shizuku`), so `.store/Shizuku.git` carries three remotes instead of
 the usual `origin`/`upstream` pair every other repo here has:
 
 | Remote | Points to | Role |
 |---|---|---|
-| `origin` | `djbclark/Shizuku` | Your own fork — fetch/push target, PR base |
+| `origin` | `frdminc/Shizuku` | Your own fork — fetch/push target, PR base |
 | `thedjchi` | `thedjchi/Shizuku` | Immediate parent fork |
 | `upstream` | `RikkaApps/Shizuku` | Root upstream |
 
@@ -77,7 +77,7 @@ This used to be misconfigured — `origin` pointed at `thedjchi/Shizuku` (the
 parent fork, not yours) and the actual push target was named `fork`. That's a
 trap for any command that assumes `origin` == "the repo I own": e.g.
 `git rebase origin/master` silently rebased onto **thedjchi's** stale master
-instead of djbclark/Shizuku's, producing a rebase that looked clean locally
+instead of frdminc/Shizuku's, producing a rebase that looked clean locally
 but conflicted on push. Fixed by renaming remotes to the table above so
 `origin` means what it means everywhere else in this workspace. If a fresh
 clone of `.store/Shizuku.git` is ever needed, re-apply this renaming before

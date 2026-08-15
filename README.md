@@ -18,7 +18,7 @@ Run it from this checkout with `bin/agent-coord status --format text`.
 | [djbclark/stayturgid](https://github.com/djbclark/stayturgid) | Android device automation / ops tooling | `ops-djbclark-cr0` | `repo:stayturgid` |
 | [djbclark/site-djbclark](https://github.com/djbclark/site-djbclark) | Public site / ansible playbooks | `ops-djbclark-6ub` | `repo:site-djbclark` |
 | [djbclark/site-private](https://github.com/djbclark/site-private) | Private site config + agent memory | `ops-djbclark-6qp` | `repo:site-private` |
-| [djbclark/Shizuku](https://github.com/djbclark/Shizuku) | Fork (RikkaApps → thedjchi → djbclark) providing the Android permission broker stayturgid depends on | `ops-djbclark-bk7` | `repo:shizuku` |
+| [frdminc/Shizuku](https://github.com/frdminc/Shizuku) | Fork (RikkaApps → thedjchi → frdminc) providing the Android permission broker stayturgid depends on | `ops-djbclark-bk7` | `repo:shizuku` |
 
 All issues live in **this repo's single shared Beads DB** — not one DB
 per code repo. Every per-repo Ralph controller's tracker config points
