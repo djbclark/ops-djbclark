@@ -25,7 +25,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-DEFAULT_ROOT = Path.home() / "src" / "ops-worktrees"
+# Workspaces moved from the bare-store worktree layout (~/src/ops-worktrees,
+# deleted 2026-08-23 with the release regime) to cow copy-on-write pastures.
+# Override with AGENT_COORD_ROOT; discovery below still handles the old layout
+# so an existing bare store keeps working.
+DEFAULT_ROOT = Path(
+    os.environ.get("AGENT_COORD_ROOT") or (Path.home() / ".cow" / "pastures")
+).expanduser()
 DEFAULT_STATE = Path.home() / ".local" / "state" / "agent-coord" / "events.jsonl"
 DEFAULT_ARTIFACT_ROOT = Path.home() / ".local" / "state" / "agent-coord" / "runs"
 GIT_TIMEOUT_SECONDS = 10
@@ -170,11 +176,57 @@ def _run_git(args: Sequence[str], cwd: Path | None = None) -> str:
     return result.stdout
 
 
+def discover_pastures(root: Path) -> list[Worktree]:
+    """Discover cow pastures — independent clones, not linked worktrees.
+
+    `cow create` lays workspaces out as ``<root>/<project>/<name>``, each a
+    full checkout with its own ``.git``. There is no bare store and
+    ``git worktree list`` reports only the clone itself, so the bare-store
+    walk below finds nothing here. Depth is bounded to those two levels
+    deliberately: recursing further would descend into the checkouts' own
+    contents.
+    """
+    discovered: list[Worktree] = []
+    for project in sorted(p for p in root.iterdir() if p.is_dir()):
+        candidates = [project] if (project / ".git").exists() else sorted(
+            c for c in project.iterdir() if c.is_dir() and (c / ".git").exists())
+        for path in candidates:
+            try:
+                head = _run_git(["rev-parse", "HEAD"], cwd=path).strip()
+                branch = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path).strip()
+                status = _run_git(["status", "--porcelain", "--untracked-files=all"], cwd=path)
+            except Exception:  # a half-created or removed pasture is not fatal
+                continue
+            lines = tuple(status.splitlines())
+            discovered.append(
+                Worktree(
+                    path=str(path),
+                    repo=project.name if path is not project else path.name,
+                    head=head,
+                    branch=branch,
+                    bare=False,
+                    dirty=bool(lines),
+                    status_lines=lines[:100],
+                )
+            )
+    return discovered
+
+
 def discover_worktrees(root: Path) -> list[Worktree]:
-    """Discover worktrees from every bare store below ``root/.store``."""
+    """Discover workspaces under ``root``, in whichever layout is present.
+
+    Prefers the bare-store worktree layout (``root/.store/*.git``) when it
+    exists, so an older checkout keeps working unchanged; otherwise treats
+    ``root`` as a directory of cow pastures.
+    """
     store_dir = root / ".store"
     if not store_dir.is_dir():
-        raise ClaimError(f"worktree store directory does not exist: {store_dir}")
+        if root.is_dir():
+            return discover_pastures(root)
+        raise ClaimError(
+            f"workspace root does not exist: {root} "
+            f"(set AGENT_COORD_ROOT or --root; cow pastures default to ~/.cow/pastures)"
+        )
 
     discovered: list[Worktree] = []
     for store in sorted(store_dir.glob("*.git")):

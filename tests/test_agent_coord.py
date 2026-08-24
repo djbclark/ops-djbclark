@@ -424,3 +424,59 @@ class WorkerRunTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DiscoveryLayoutTests(unittest.TestCase):
+    """Workspaces moved from bare-store worktrees to cow pastures 2026-08-23."""
+
+    @staticmethod
+    def _git(cwd, *args):
+        import subprocess
+        subprocess.run(["git", *args], cwd=cwd, check=True,
+                       capture_output=True, text=True)
+
+    def _pasture(self, root: Path, project: str, name: str, dirty: bool = False) -> Path:
+        path = root / project / name
+        path.mkdir(parents=True)
+        self._git(path, "init", "-q", "-b", "work")
+        (path / "f.txt").write_text("x\n")
+        self._git(path, "add", "f.txt")
+        self._git(path, "-c", "user.email=t@t", "-c", "user.name=t",
+                  "commit", "-qm", "init")
+        if dirty:
+            (path / "f.txt").write_text("changed\n")
+        return path
+
+    def test_discovers_cow_pastures_when_no_bare_store(self):
+        from bin.agent_coord import discover_worktrees
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._pasture(root, "hermes-agent", "alpha")
+            self._pasture(root, "hermes-agent", "beta", dirty=True)
+            found = discover_worktrees(root)
+            self.assertEqual(len(found), 2)
+            self.assertEqual({w.branch for w in found}, {"work"})
+            self.assertEqual(sum(1 for w in found if w.dirty), 1)
+            self.assertTrue(all(w.repo == "hermes-agent" for w in found))
+
+    def test_missing_root_reports_actionable_error(self):
+        from bin.agent_coord import discover_worktrees, ClaimError
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ClaimError) as ctx:
+                discover_worktrees(Path(d) / "absent")
+            self.assertIn("AGENT_COORD_ROOT", str(ctx.exception))
+
+    def test_empty_root_is_not_an_error(self):
+        from bin.agent_coord import discover_worktrees
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(discover_worktrees(Path(d)), [])
+
+    def test_half_created_pasture_is_skipped_not_fatal(self):
+        from bin.agent_coord import discover_worktrees
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._pasture(root, "proj", "good")
+            broken = root / "proj" / "broken"
+            (broken / ".git").mkdir(parents=True)   # .git exists but is not a repo
+            found = discover_worktrees(root)
+            self.assertEqual([w.path.split("/")[-1] for w in found], ["good"])
