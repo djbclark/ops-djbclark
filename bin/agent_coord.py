@@ -25,9 +25,15 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+try:
+    from .agent_communicate import ADAPTERS, CommunicationError, client_inventory, communicate
+except ImportError:  # Executed through the bin/agent-coord wrapper.
+    from agent_communicate import ADAPTERS, CommunicationError, client_inventory, communicate
+
 DEFAULT_ROOT = Path.home() / "src" / "ops-worktrees"
 DEFAULT_STATE = Path.home() / ".local" / "state" / "agent-coord" / "events.jsonl"
 DEFAULT_ARTIFACT_ROOT = Path.home() / ".local" / "state" / "agent-coord" / "runs"
+DEFAULT_COMMUNICATION_ROOT = Path.home() / ".local" / "state" / "agent-coord" / "communications"
 GIT_TIMEOUT_SECONDS = 10
 MAX_ARTIFACT_BYTES = 1_000_000
 MAX_STDERR_BYTES = 256_000
@@ -849,6 +855,16 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--model", default="sonnet")
     run.add_argument("--resume")
     run.add_argument("--allowed-tool", action="append", default=[])
+    inventory = sub.add_parser("clients")
+    inventory.add_argument("--format", choices=("json", "text"), default="json")
+    ask = sub.add_parser("ask")
+    ask.add_argument("--client", action="append", choices=tuple(sorted(ADAPTERS)), required=True)
+    ask.add_argument("--prompt-file", type=Path)
+    ask.add_argument("--cwd", type=Path, default=Path.cwd())
+    ask.add_argument("--artifact-root", type=Path, default=DEFAULT_COMMUNICATION_ROOT)
+    ask.add_argument("--timeout-seconds", type=float, default=300)
+    ask.add_argument("--max-retries", type=int, default=0)
+    ask.add_argument("--capture-response", action="store_true")
     claim = sub.add_parser("claim")
     claim.add_argument("workspace", type=Path)
     claim.add_argument("--agent", default=os.environ.get("AGENT_COORD_AGENT", "unknown"))
@@ -888,6 +904,45 @@ def main(argv: Sequence[str] | None = None) -> int:
                 report["event_log_errors"] = errors
             _print_status(report, args.format)
             return 0 if not errors else 2
+        if args.command == "clients":
+            inventory = client_inventory()
+            if args.format == "json":
+                print(json.dumps(inventory, indent=2, sort_keys=True))
+            else:
+                for item in inventory:
+                    state = "installed" if item["installed"] else "absent"
+                    print(f"{item['name']} {state} transport={item['transport']} version={item['version'] or '-'}")
+            return 0
+        if args.command == "ask":
+            prompt = args.prompt_file.read_text(encoding="utf-8") if args.prompt_file else sys.stdin.read()
+            results = []
+            exit_code = 0
+            for client in args.client:
+                result = communicate(
+                    client,
+                    prompt=prompt,
+                    cwd=args.cwd,
+                    artifact_root=args.artifact_root,
+                    timeout_seconds=args.timeout_seconds,
+                    max_retries=args.max_retries,
+                    capture_response=args.capture_response,
+                )
+                results.append(
+                    {
+                        "run_id": result.run_id,
+                        "client": result.client,
+                        "status": result.status,
+                        "exit_code": result.exit_code,
+                        "artifact_dir": str(result.artifact_dir),
+                        "attempts": result.attempts,
+                        "timed_out": result.timed_out,
+                        "response_captured": result.response_captured,
+                    }
+                )
+                if result.status != "success":
+                    exit_code = 1
+            print(json.dumps(results, indent=2, sort_keys=True))
+            return exit_code
         if args.command == "gate":
             worktrees = discover_worktrees(args.root)
             target = args.workspace.resolve()
