@@ -46,12 +46,12 @@ cp -rf source dest          # NOT: cp -r source dest
 - `ssh` - use `-o BatchMode=yes` to fail instead of prompting
 - `apt-get` - use `-y` flag
 
-(`brew` was listed here for `HOMEBREW_NO_AUTO_UPDATE=1` until 2026-10-11. That
-variable does not prevent a prompt — it suppresses brew's own auto-update, and
-tools should update. It is already exported machine-wide in
-`site-djbclark/shell/bashrc` (~/.bashrc), and the scheduled `brew-fast-upgrade`
-Jobber job (03:10 daily) owns `brew update && brew upgrade` for brew and npm
-globals, so no command needs to set it.)
+**For performance, not interactivity:** `brew` - prefix long automated installs
+with `HOMEBREW_NO_AUTO_UPDATE=1`. It suppresses the `brew update` brew otherwise
+runs first (minutes, and it can fail on a flaky connection); it does **not** stop
+anything updating. It is already exported machine-wide in
+`site-djbclark/shell/bashrc`, and the scheduled `brew-fast-upgrade` Jobber job
+(03:10 daily) owns `brew update && brew upgrade` for brew and npm globals.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker
