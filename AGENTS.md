@@ -45,7 +45,13 @@ cp -rf source dest          # NOT: cp -r source dest
 - `scp` - use `-o BatchMode=yes` for non-interactive
 - `ssh` - use `-o BatchMode=yes` to fail instead of prompting
 - `apt-get` - use `-y` flag
-- `brew` - use `HOMEBREW_NO_AUTO_UPDATE=1` env var
+
+(`brew` was listed here for `HOMEBREW_NO_AUTO_UPDATE=1` until 2026-10-11. That
+variable does not prevent a prompt — it suppresses brew's own auto-update, and
+tools should update. It is already exported machine-wide in
+`site-djbclark/shell/bashrc` (~/.bashrc), and the scheduled `brew-fast-upgrade`
+Jobber job (03:10 daily) owns `brew update && brew upgrade` for brew and npm
+globals, so no command needs to set it.)
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker
